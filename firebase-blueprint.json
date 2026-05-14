@@ -1,0 +1,116 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile data including donor loyalty tiers.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "donor"] },
+        "loyaltyTier": { "type": "string", "enum": ["Bronze", "Silver", "Gold", "Platinum"] },
+        "totalContribution": { "type": "number" },
+        "emailVerified": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email", "role", "emailVerified"]
+    },
+    "Patient": {
+      "title": "Patient",
+      "description": "Pediatric cancer patient records (admin access only).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "publicIdentifier": { "type": "string" },
+        "fullName": { "type": "string" },
+        "age": { "type": "number" },
+        "diagnosis": { "type": "string" },
+        "treatmentPlan": { "type": "string" },
+        "priority": { "type": "string", "enum": ["Critical", "High", "General"] },
+        "fundingGoal": { "type": "number" },
+        "fundingRaised": { "type": "number" },
+        "status": { "type": "string", "enum": ["Active", "TreatmentCompleted", "Inactive"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "publicIdentifier", "fundingGoal"]
+    },
+    "Donation": {
+      "title": "Donation",
+      "description": "Record of financial contributions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "donorId": { "type": "string" },
+        "patientId": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "paymentMethod": { "type": "string", "enum": ["gcash", "card", "crypto"] },
+        "receiptUrl": { "type": "string" },
+        "blockchainTxHash": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "verifiedBy": { "type": "string" }
+      },
+      "required": ["amount", "donorId", "timestamp", "status"]
+    },
+    "AuctionItem": {
+      "title": "Auction Item",
+      "description": "Items donated for charity auctions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "startPrice": { "type": "number" },
+        "currentBid": { "type": "number" },
+        "highestBidderId": { "type": "string" },
+        "endTime": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["draft", "active", "closed"] },
+        "contractAddress": { "type": "string" },
+        "contractDeployed": { "type": "boolean" }
+      },
+      "required": ["title", "startPrice", "endTime"]
+    },
+    "AuditLog": {
+      "title": "Audit Log",
+      "description": "Security and administrative audit trail.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "adminId": { "type": "string" },
+        "action": { "type": "string" },
+        "resource": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "ipAddress": { "type": "string" }
+      },
+      "required": ["adminId", "action", "timestamp"]
+    },
+    "AppConfiguration": {
+      "title": "App Configuration",
+      "description": "Global settings including QR codes and moderation switches.",
+      "type": "object",
+      "properties": {
+        "gcashQrUrl": { "type": "string" },
+        "maintenanceMode": { "type": "boolean" },
+        "allowPublicSubmissions": { "type": "boolean" },
+        "privacyNotice": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "User", "description": "Global user profiles" },
+    "/patients/{patientId}": { "schema": "Patient", "description": "Patient records" },
+    "/donations/{donationId}": { "schema": "Donation", "description": "Donation transactions" },
+    "/auctions/{auctionId}": { "schema": "AuctionItem", "description": "Charity auction items" },
+    "/auctions/{auctionId}/bids/{bidId}": { "schema": "object", "description": "Subcollection for bids" },
+    "/audit_logs/{logId}": { "schema": "AuditLog", "description": "Administrative actions" },
+    "/settings/config": { "schema": "AppConfiguration", "description": "Global settings" }
+  }
+}

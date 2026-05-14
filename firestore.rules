@@ -1,0 +1,140 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // Check if user is admin (email-based for bootstrap or custom claims)
+    function isAdmin() { 
+      return isSignedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() == 'ynn.delro7@gmail.com'.lower()
+        )) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      ); 
+    }
+
+    // --- Collections ---
+
+    // 1. Users
+    function isValidUser(data) {
+      return (isAdmin() || data.userId == request.auth.uid)
+        && (data.email == null || (data.email is string && data.email.size() < 256))
+        && (data.displayName == null || (data.displayName is string && data.displayName.size() < 200))
+        && (data.role == null || data.role in ['admin', 'donor'])
+        && (data.loyaltyTier == null || data.loyaltyTier in ['Bronze Champion', 'Silver Champion', 'Gold Champion', 'Platinum Champion'])
+        && (data.totalContribution == null || data.totalContribution is number)
+        && (data.emailVerified == null || data.emailVerified is bool);
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && userId == request.auth.uid && isValidUser(incoming());
+      allow update: if isSignedIn() && userId == request.auth.uid && (
+        isValidUser(incoming()) || isAdmin()
+      );
+    }
+
+    // 2. Patients
+    function isValidPatient(data) {
+      return (data.publicIdentifier == null || (data.publicIdentifier is string && data.publicIdentifier.size() < 128))
+        && (data.fullName == null || (data.fullName is string && data.fullName.size() < 256))
+        && (data.fundingGoal == null || (data.fundingGoal is number && data.fundingGoal >= 0))
+        && (data.priority == null || data.priority in ['Critical', 'High', 'General'])
+        && (data.status == null || data.status is string)
+        && (data.isPublic == null || data.isPublic is bool);
+    }
+
+    match /patients/{patientId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 3. Donations
+    function isValidDonation(data) {
+      return (isAdmin() || data.donorId == request.auth.uid || data.donorId == null)
+        && (data.amount == null || (data.amount is number && data.amount > 0))
+        && (data.paymentMethod == null || data.paymentMethod in ['gcash', 'card', 'crypto', 'bank_transfer'])
+        && (data.status == null || data.status in ['pending', 'verified', 'rejected'])
+        && (data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() < 1000))
+        && (data.blockchainTxHash == null || (data.blockchainTxHash is string && data.blockchainTxHash.size() < 256))
+        && (data.type == null || data.type in ['direct', 'fundraiser', 'auction_payment'])
+        && (data.currency == null || data.currency in ['PHP', 'USD'])
+        && (data.donorName == null || data.donorName is string)
+        && (data.timestamp == null || data.timestamp is string)
+        && (data.patientId == null || isValidId(data.patientId))
+        && (data.receiptUrl == null || data.receiptUrl is string)
+        && (data.auctionId == null || isValidId(data.auctionId));
+    }
+
+    match /donations/{donationId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidDonation(incoming());
+      allow update: if isAdmin();
+    }
+
+    // 4. Auctions
+    function isValidAuctionItem(data) {
+      return (data.title == null || (data.title is string && data.title.size() < 1000))
+        && (data.currentBid == null || (data.currentBid is number && data.currentBid >= 0))
+        && (data.status == null || data.status in ['draft', 'audit', 'active', 'closed', 'cancelled'])
+        && (data.paymentStatus == null || data.paymentStatus in ['pending_verification', 'verified', 'rejected'])
+        && (data.ownerId == null || isValidId(data.ownerId))
+        && (data.lastUpdated == null || data.lastUpdated is string)
+        && (data.createdAt == null || data.createdAt is string)
+        && (data.description == null || data.description is string)
+        && (data.image == null || data.image is string)
+        && (data.imageUrl == null || data.imageUrl is string)
+        && (data.category == null || data.category is string)
+        && (data.endTime == null || data.endTime is string)
+        && (data.startPrice == null || (data.startPrice is number && data.startPrice >= 0))
+        && (data.highestBidderId == null || isValidId(data.highestBidderId))
+        && (data.highestBidderName == null || data.highestBidderName is string)
+        && (data.lastBidTime == null || data.lastBidTime is string)
+        && (data.contractAddress == null || data.contractAddress is string)
+        && (data.contractDeployed == null || data.contractDeployed is bool)
+        && (data.bidHistory == null || data.bidHistory is list);
+    }
+
+    match /auctions/{auctionId} {
+      allow read: if true;
+      allow create: if isAdmin() && isValidAuctionItem(incoming());
+      allow update: if isSignedIn() && (
+        isAdmin() 
+        || (incoming().ownerId == request.auth.uid && (existing().status == 'draft' || existing().status == 'audit'))
+        || (incoming().diff(existing()).affectedKeys().hasAny(['currentBid', 'highestBidderId', 'highestBidderName', 'lastBidTime', 'lastUpdated', 'status', 'paymentStatus']))
+      );
+      allow delete: if isAdmin() || (isSignedIn() && existing().ownerId == request.auth.uid && (existing().status == 'draft' || existing().status == 'audit'));
+    }
+
+    match /auctions/{auctionId}/bids/{bidId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() 
+        && incoming().bidderId == request.auth.uid 
+        && incoming().amount >= get(/databases/$(database)/documents/auctions/$(auctionId)).data.currentBid;
+    }
+
+    // 5. Settings & Audit
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+    }
+  }
+}
