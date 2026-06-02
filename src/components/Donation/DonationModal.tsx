@@ -40,6 +40,7 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
   const [receiptUrl, setReceiptUrl] = useState<string>('');
   const [tempReceipt, setTempReceipt] = useState<string | null>(null);
   const [foundationQr, setFoundationQr] = useState<string | null>(null);
+  const [isAnonymous, setIsAnonymous] = useState(false);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -115,40 +116,28 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
   };
 
   const handleSubmitDonation = async () => {
-    if (!profile) {
-      alert("Please sign in to make a donation.");
-      return;
-    }
+    if (!profile) return;
     const numericAmount = parseFloat(amount);
     if (!numericAmount || isNaN(numericAmount) || numericAmount <= 0) {
       alert("Please enter a valid donation amount.");
       return;
     }
-    if (!receiptUrl && !tempReceipt) {
-      alert("Please upload a receipt for verification.");
-      return;
-    }
-
     setUploading(true);
     try {
-      const finalReceipt = receiptUrl || tempReceipt || 'https://images.unsplash.com/photo-1554224155-1696413565d3?auto=format&fit=crop&q=80&w=200';
-      
       await addDoc(collection(db, 'donations'), {
         donorId: profile.userId,
         donorName: profile.displayName || 'Anonymous Warrior',
+        isAnonymous: isAnonymous,
         patientId: patient.id,
         amount: numericAmount,
         currency: 'PHP',
         paymentMethod: method,
-        receiptUrl: finalReceipt,
+        receiptUrl: receiptUrl || 'https://images.unsplash.com/photo-1554224155-1696413565d3?auto=format&fit=crop&q=80&w=200', // Mock receipt
         status: 'pending',
-        timestamp: new Date().toISOString(),
-        type: 'direct'
+        timestamp: new Date().toISOString()
       });
       setStep('success');
     } catch (err) {
-      console.error("Donation error:", err);
-      alert("Failed to submit donation. Please try again.");
       handleFirestoreError(err, OperationType.WRITE, 'donations');
     } finally {
       setUploading(false);
@@ -190,6 +179,36 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
                    onChange={e => setAmount(e.target.value)}
                  />
                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">PHP</span>
+               </div>
+               <div 
+                 onClick={() => setIsAnonymous(!isAnonymous)}
+                 className={cn(
+                   "p-4 rounded-xl border-2 flex items-center justify-between cursor-pointer transition-all select-none mt-4",
+                   isAnonymous ? "border-brand-primary bg-teal-50/40" : "border-slate-100 bg-white hover:border-slate-200"
+                 )}
+               >
+                 <div className="flex items-center gap-3">
+                   <div className={cn(
+                     "p-2 rounded-lg border",
+                     isAnonymous ? "bg-teal-50 text-brand-primary border-teal-200" : "bg-slate-50 text-slate-400 border-slate-100"
+                   )}>
+                     <ShieldCheck className="w-4 h-4" />
+                   </div>
+                   <div>
+                     <p className="text-xs font-bold text-slate-700">Donate Anonymously</p>
+                     <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5 tracking-wider font-semibold">Mask your identity on public boards</p>
+                   </div>
+                 </div>
+                 <div className={cn(
+                   "w-10 h-6 rounded-full p-0.5 transition-colors duration-200 flex items-center cursor-pointer",
+                   isAnonymous ? "bg-brand-primary" : "bg-slate-200"
+                 )}>
+                   <motion.div 
+                     layout
+                     className="w-5 h-5 bg-white rounded-full shadow-sm"
+                     animate={{ x: isAnonymous ? 16 : 0 }}
+                   />
+                 </div>
                </div>
             </div>
             <button 
@@ -293,7 +312,7 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
                <button onClick={() => setStep('payment')} className="flex-1 py-4 text-slate-500 font-bold uppercase text-xs tracking-widest">Back</button>
                <button 
                 onClick={handleSubmitDonation}
-                disabled={uploading || (!receiptUrl && !tempReceipt)}
+                disabled={uploading || !receiptUrl}
                 className="flex-3 py-4 bg-brand-primary text-white rounded-xl font-bold uppercase text-xs tracking-widest flex items-center justify-center gap-2 disabled:opacity-50"
                >
                  {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Confirm & Send for Verification'}

@@ -18,9 +18,12 @@ export function AuctionSection() {
   const [selectedItemHistory, setSelectedItemHistory] = useState<Bid[]>([]);
   const [showHistory, setShowHistory] = useState<string | null>(null);
   const [checkoutItem, setCheckoutItem] = useState<AuctionItem | null>(null);
+  const [isAnonymous, setIsAnonymous] = useState(false);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [itemToDeleteId, setItemToDeleteId] = useState<string | null>(null);
+  const [auditConfirmId, setAuditConfirmId] = useState<string | null>(null);
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -53,11 +56,14 @@ export function AuctionSection() {
     e.preventDefault();
     if (!checkoutItem || !receiptUrl || !profile) return;
     setIsProcessing(true);
+    
+    let donationRef;
     try {
-      const donationRef = await addDoc(collection(db, 'donations'), {
+      donationRef = await addDoc(collection(db, 'donations'), {
         donorId: profile.userId,
         donorName: profile.displayName || 'Anonymous Warrior',
-        amount: checkoutItem.currentBid,
+        isAnonymous: isAnonymous,
+        amount: Number(checkoutItem.currentBid),
         currency: 'PHP',
         paymentMethod: 'gcash',
         receiptUrl,
@@ -66,29 +72,74 @@ export function AuctionSection() {
         auctionId: checkoutItem.id,
         timestamp: new Date().toISOString()
       });
-      
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'donations');
+      setIsProcessing(false);
+      return;
+    }
+    
+    try {
       await updateDoc(doc(db, 'auctions', checkoutItem.id), {
         status: 'closed',
         paymentStatus: 'pending_verification'
       });
-
-      await logAction('AUCTION_SETTLEMENT', `auctions/${checkoutItem.id}`, `User settled acquisition for ${checkoutItem.currentBid} PHP. Donation ID: ${donationRef.id}`);
-
-      alert('Proof of payment submitted. Our treasury is auditing the transaction on-chain.');
-      setCheckoutItem(null);
-      setReceiptUrl(null);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'donations');
-    } finally {
+      handleFirestoreError(err, OperationType.WRITE, 'auctions');
       setIsProcessing(false);
+      return;
     }
+
+    try {
+      await logAction('AUCTION_SETTLEMENT', `auctions/${checkoutItem.id}`, `User settled acquisition for ${checkoutItem.currentBid} PHP. Donation ID: ${donationRef.id}`);
+    } catch (err) {
+      console.error('Audit Log failed', err);
+    }
+
+    alert('Proof of payment submitted. Our treasury is auditing the transaction on-chain.');
+    setCheckoutItem(null);
+    setReceiptUrl(null);
+    setIsProcessing(false);
   };
 
   const handleReceiptUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        alert("File is too large. Please select an image smaller than 5MB.");
+        return;
+      }
       const reader = new FileReader();
-      reader.onloadend = () => setReceiptUrl(reader.result as string);
+      reader.onloadend = () => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800;
+          const MAX_HEIGHT = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          const compressed = canvas.toDataURL('image/jpeg', 0.6);
+          setReceiptUrl(compressed);
+        };
+        img.src = reader.result as string;
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -144,8 +195,42 @@ export function AuctionSection() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        alert("File is too large. Please select an image smaller than 5MB.");
+        return;
+      }
       const reader = new FileReader();
-      reader.onloadend = () => setNewItem(prev => ({ ...prev, image: reader.result as string }));
+      reader.onloadend = () => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800;
+          const MAX_HEIGHT = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          
+          const compressed = canvas.toDataURL('image/jpeg', 0.6);
+          setNewItem(prev => ({ ...prev, image: compressed }));
+        };
+        img.src = reader.result as string;
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -222,12 +307,16 @@ export function AuctionSection() {
     }
   };
 
-  const handleDeleteItem = async (itemId: string) => {
-    if (!confirm('Are you sure you want to permanently remove this draft/audit item?')) return;
+  const handleDeleteItem = async (itemId: string, bypassConfirm: boolean = false) => {
+    if (!bypassConfirm) {
+      setItemToDeleteId(itemId);
+      return;
+    }
     try {
       await deleteDoc(doc(db, 'auctions', itemId));
       await logAction('DELETE_OWN_AUCTION', `auctions/${itemId}`, 'User removed their own auction draft');
       alert('Asset removed from registry.');
+      setItemToDeleteId(null);
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, 'auctions');
     }
@@ -418,11 +507,23 @@ export function AuctionSection() {
                        <div className="flex items-center gap-2">
                          {(item.ownerId === profile?.userId || profile?.role === 'admin') && (item.status === 'draft' || item.status === 'audit') && (
                            <button 
-                             onClick={() => handleDeleteItem(item.id)}
-                             className="p-1.5 hover:bg-red-50 text-slate-300 hover:text-red-500 rounded transition-all"
+                             onClick={() => {
+                               if (itemToDeleteId === item.id) {
+                                 handleDeleteItem(item.id, true);
+                               } else {
+                                 setItemToDeleteId(item.id);
+                                 setTimeout(() => setItemToDeleteId(null), 4000);
+                               }
+                             }}
+                             className={cn(
+                               "p-1.5 rounded transition-all flex items-center gap-1",
+                               itemToDeleteId === item.id 
+                                 ? "bg-red-600 text-white hover:bg-red-700 animate-pulse" 
+                                 : "hover:bg-red-50 text-slate-300 hover:text-red-500"
+                             )}
                              title="Delete Listing"
                            >
-                              <Trash2 className="w-4 h-4" />
+                              {itemToDeleteId === item.id ? <span className="text-[8px] font-black uppercase tracking-widest px-1">Confirm?</span> : <Trash2 className="w-4 h-4" />}
                            </button>
                          )}
                          <button onClick={() => setShowHistory(showHistory === item.id ? null : item.id)}>
@@ -485,7 +586,11 @@ export function AuctionSection() {
                     {item.status === 'draft' && item.ownerId === profile?.userId && (
                        <button 
                          onClick={async () => {
-                           if (!confirm('Push this asset to the foundation for provenance audit? You cannot edit main fields after this.')) return;
+                           if (auditConfirmId !== item.id) {
+                             setAuditConfirmId(item.id);
+                             setTimeout(() => setAuditConfirmId(null), 5000);
+                             return;
+                           }
                            try {
                              await updateDoc(doc(db, 'auctions', item.id), {
                                status: 'audit',
@@ -493,13 +598,19 @@ export function AuctionSection() {
                              });
                              await logAction('PUSH_TO_AUDIT', `auctions/${item.id}`, 'User submitted asset for audit');
                              alert('Asset pushed to audit.');
+                             setAuditConfirmId(null);
                            } catch (err) {
                              handleFirestoreError(err, OperationType.WRITE, 'auctions');
                            }
                          }}
-                         className="w-full py-3 bg-slate-800 text-white rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl"
+                         className={cn(
+                           "w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-xl transition-all",
+                           auditConfirmId === item.id 
+                             ? "bg-amber-600 text-white animate-pulse" 
+                             : "bg-slate-800 text-white"
+                         )}
                        >
-                         Submit for Audit
+                         {auditConfirmId === item.id ? "Click to Confirm" : "Submit for Audit"}
                        </button>
                     )}
                   </div>
@@ -595,6 +706,31 @@ export function AuctionSection() {
                     <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Settlement</p>
                       <p className="text-2xl font-black text-slate-900">₱{checkoutItem.currentBid.toLocaleString()}</p>
+                    </div>
+
+                    <div 
+                      onClick={() => setIsAnonymous(!isAnonymous)}
+                      className={cn(
+                        "p-4 rounded-xl border flex items-center justify-between cursor-pointer transition-all select-none",
+                        isAnonymous ? "border-teal-600 bg-teal-50/40" : "border-slate-100 bg-white hover:border-slate-200"
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <ShieldCheck className={cn("w-5 h-5", isAnonymous ? "text-teal-600" : "text-slate-400")} />
+                        <div>
+                          <p className="text-xs font-bold text-slate-700">Donate Anonymously</p>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5 tracking-wider font-semibold">Mask your identity on public boards</p>
+                        </div>
+                      </div>
+                      <div className={cn(
+                        "w-10 h-6 rounded-full p-0.5 transition-colors duration-200 flex items-center cursor-pointer",
+                        isAnonymous ? "bg-teal-600" : "bg-slate-200"
+                      )}>
+                        <div className={cn(
+                          "w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200",
+                          isAnonymous ? "transform translate-x-4" : ""
+                        )} />
+                      </div>
                     </div>
 
                     <div className="space-y-2">

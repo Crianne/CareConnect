@@ -15,6 +15,7 @@ export function PatientList() {
   const [loading, setLoading] = useState(true);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [isDonating, setIsDonating] = useState(false);
+  const [expandedPatientId, setExpandedPatientId] = useState<string | null>(null);
 
   useEffect(() => {
     // For non-admins, we only show ACTIVE patients.
@@ -109,12 +110,75 @@ export function PatientList() {
                    </div>
                 </div>
 
-                <div>
-                  <h4 className="text-sm font-bold text-slate-600 line-clamp-1 flex items-center gap-2">
-                    <ShieldCheck className="w-3 h-3 text-teal-600" />
-                    Verified Diagnosis: De-Identified Records
-                  </h4>
-                  <p className="text-xs text-slate-400 font-medium mt-1">Medical records verified by AI & Foundation Audit</p>
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      Verified Diagnosis ({patient.age} y/o Warrior)
+                    </h4>
+                    <p className="text-xs bg-emerald-50/50 text-emerald-950 border border-emerald-100/60 rounded-xl p-3 font-semibold mt-1.5 leading-relaxed">
+                      {patient.diagnosis || "Acute Cancer Case (Under Verification)"}
+                    </p>
+                  </div>
+
+                  {/* Expandable transparent treatment plan */}
+                  <div className="border-t border-slate-100 pt-3">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedPatientId(expandedPatientId === patient.id ? null : patient.id);
+                      }}
+                      className="text-[10px] font-black text-brand-primary uppercase tracking-widest hover:text-brand-primary/80 flex items-center gap-1.5 focus:outline-none"
+                    >
+                      {expandedPatientId === patient.id ? "Hide Treatment Blueprint" : "Show Treatment Blueprint & Proof"}
+                      <span className="text-xs">{expandedPatientId === patient.id ? "▲" : "▼"}</span>
+                    </button>
+                    
+                    <AnimatePresence>
+                      {expandedPatientId === patient.id && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden mt-3 space-y-3"
+                        >
+                          <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                            <h5 className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Transparent Treatment Protocol</h5>
+                            <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                              {patient.treatmentPlan || "Subject to final diagnostic confirmation and foundation board audit."}
+                            </p>
+                          </div>
+                          {patient.medicalDocuments && patient.medicalDocuments.length > 0 ? (
+                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3">
+                              <h5 className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+                                Verified Medical Documents ({patient.medicalDocuments.length})
+                              </h5>
+                              <div className="space-y-1.5">
+                                {patient.medicalDocuments.map((doc) => (
+                                  <a 
+                                    key={doc.id}
+                                    href={doc.url}
+                                    target="_blank"
+                                    referrerPolicy="no-referrer"
+                                    rel="noreferrer"
+                                    className="flex items-center justify-between p-2 bg-white rounded-lg border border-slate-100 hover:border-brand-primary text-[10px] font-bold transition-all"
+                                  >
+                                    <span className="text-slate-600 truncate max-w-[140px]">{doc.name}</span>
+                                    <span className="text-[8px] font-bold text-brand-primary uppercase tracking-widest bg-brand-primary/5 px-2 py-1 rounded">View Proof ↗</span>
+                                  </a>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 text-center">
+                              <p className="text-[9px] text-slate-400 italic">Verified via internal cryptographic medical ledger. No raw attachments uploaded.</p>
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 </div>
 
                 <div className="space-y-1.5">

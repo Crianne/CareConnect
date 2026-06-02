@@ -26,7 +26,40 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { UserRole, AppConfiguration, Donation } from '../types';
+import { UserRole, AppConfiguration, Donation, LoyaltyTier } from '../types';
+
+const MILESTONES = [
+  {
+    count: 1,
+    name: "Seed of Hope",
+    desc: "Initiated your first verified life-saving contribution to support pediatric cancer oncology.",
+    benefit: "Unlocks standard community contributor status and digital footprint on the ledger."
+  },
+  {
+    count: 5,
+    name: "Guardian Angel",
+    desc: "Successfully funded critical treatments across multiple oncology cases.",
+    benefit: "Grants access to exclusive general assembly live-audits and priority impact logs."
+  },
+  {
+    count: 10,
+    name: "Pillar of Care",
+    desc: "Recognized as a structural pillar supporting steady medical treatment cycles.",
+    benefit: "Provides access to limited-edition charity auction items and unique bidding privileges."
+  },
+  {
+    count: 25,
+    name: "Mainnet Champion",
+    desc: "An elite decentralized medicine advocate securing immutable patient care records.",
+    benefit: "Enables governance proposal discussions and zero-fee Web3 smart contract triggers."
+  },
+  {
+    count: 50,
+    name: "Legacy Pioneer",
+    desc: "The highest permanent ledger honor, shaping future generations of pediatric care.",
+    benefit: "Locked-in lifetime recognition badge, direct IPFS oracle consensus, and VIP tier benefits."
+  }
+];
 
 export function Settings() {
   const { profile, logout } = useAuth();
@@ -37,6 +70,7 @@ export function Settings() {
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
   const [userDonations, setUserDonations] = useState<Donation[]>([]);
+  const [selectedMilestoneIndex, setSelectedMilestoneIndex] = useState<number>(0);
 
   const isAdmin = profile?.role === UserRole.ADMIN;
 
@@ -51,7 +85,7 @@ export function Settings() {
   }, []);
 
   useEffect(() => {
-    if (!profile || isAdmin) return;
+    if (!profile) return;
     
     const donationsQuery = query(
       collection(db, 'donations'),
@@ -64,7 +98,47 @@ export function Settings() {
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'donations'));
 
     return unsub;
-  }, [profile?.userId, isAdmin]);
+  }, [profile?.userId]);
+
+  // Reconcile user profile statistics with the actual donations list
+  useEffect(() => {
+    if (!profile || userDonations.length === 0) return;
+
+    const verifiedDons = userDonations.filter(d => d.status === 'verified');
+    const calculatedTotal = verifiedDons.reduce((sum, d) => sum + (d.amount || 0), 0);
+    const calculatedCount = verifiedDons.length;
+
+    const currentTotal = profile.totalContribution || 0;
+    const currentCount = profile.verifiedContributionsCount || 0;
+
+    if (currentTotal !== calculatedTotal || currentCount !== calculatedCount) {
+      console.log(`Reconciling user stats in Settings. Firestore: total=${currentTotal}, count=${currentCount}. Actual: total=${calculatedTotal}, count=${calculatedCount}`);
+      
+      const updateStats = async () => {
+        try {
+          const { doc, updateDoc } = await import('firebase/firestore');
+          const { db } = await import('../lib/firebase');
+          const userRef = doc(db, 'users', profile.userId);
+          
+          let newTier = profile.loyaltyTier || LoyaltyTier.BRONZE;
+          if (calculatedTotal >= 200000) newTier = LoyaltyTier.PLATINUM;
+          else if (calculatedTotal >= 50000) newTier = LoyaltyTier.GOLD;
+          else if (calculatedTotal >= 10000) newTier = LoyaltyTier.SILVER;
+          else newTier = LoyaltyTier.BRONZE;
+
+          await updateDoc(userRef, {
+            totalContribution: calculatedTotal,
+            verifiedContributionsCount: calculatedCount,
+            loyaltyTier: newTier
+          });
+        } catch (e) {
+          console.error("Failed to update reconciled stats in Firestore:", e);
+        }
+      };
+      
+      updateStats();
+    }
+  }, [userDonations, profile?.userId]);
 
   React.useEffect(() => {
     if (profile?.displayName) {
@@ -133,12 +207,11 @@ export function Settings() {
     { id: 'profile', label: 'Identity', icon: User },
     { id: 'security', label: 'Security', icon: Lock },
     { id: 'notifications', label: 'Alert Prefs', icon: Bell },
+    { id: 'impact', label: 'Impact Data', icon: Wallet },
     ...(isAdmin ? [
       { id: 'admin', label: 'Foundation settings', icon: Shield },
       { id: 'blockchain', label: 'Polygon Node', icon: Database },
-    ] : [
-      { id: 'impact', label: 'Impact Data', icon: Wallet },
-    ])
+    ] : [])
   ];
 
   return (
@@ -278,7 +351,7 @@ export function Settings() {
             </div>
           )}
 
-          {activeSubTab === 'impact' && !isAdmin && (
+          {activeSubTab === 'impact' && (
             <div className="space-y-8">
                <div className="flex items-center gap-2 mb-6">
                  <Wallet className="w-6 h-6 text-brand-primary" />
@@ -314,20 +387,66 @@ export function Settings() {
                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Heritage Achievements</p>
                      <span className="text-[10px] font-bold text-brand-primary uppercase tracking-widest">{profile?.loyaltyTier} Tier unlocked</span>
                   </div>
-                  <div className="flex flex-wrap gap-4 mb-10">
-                     {[1, 5, 10, 25, 50].map((milestone, i) => (
-                       <div key={milestone} className="text-center group">
-                          <div className={cn(
-                             "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm mb-2",
-                             (profile?.verifiedContributionsCount || 0) >= milestone 
-                               ? "bg-brand-primary text-white scale-110 shadow-brand-primary/20" 
-                               : "bg-white text-slate-200 border border-slate-100 opacity-40"
-                          )}>
-                             <Trophy className="w-6 h-6" />
-                          </div>
-                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">{milestone} Impacts</p>
-                       </div>
-                     ))}
+                  
+                  <div className="grid grid-cols-5 gap-3 mb-6">
+                     {MILESTONES.map((milestone, i) => {
+                        const isUnlocked = (profile?.verifiedContributionsCount || 0) >= milestone.count;
+                        const isSelected = selectedMilestoneIndex === i;
+                        return (
+                          <button 
+                            key={milestone.count} 
+                            onClick={() => setSelectedMilestoneIndex(i)}
+                            className="text-center group focus:outline-none flex flex-col items-center"
+                          >
+                             <div className={cn(
+                                "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm mb-2 cursor-pointer relative",
+                                isUnlocked 
+                                  ? isSelected
+                                    ? "bg-brand-primary text-white scale-110 ring-2 ring-brand-primary/40 shadow-brand-primary/20 shadow-lg" 
+                                    : "bg-teal-50 text-brand-primary hover:bg-brand-primary hover:text-white"
+                                  : isSelected
+                                    ? "bg-slate-200 text-slate-500 scale-110 ring-2 ring-slate-300"
+                                    : "bg-white text-slate-200 border border-slate-100 opacity-40 hover:opacity-100"
+                             )}>
+                                <Trophy className={cn("w-6 h-6 transition-transform", isSelected && "scale-110")} />
+                                {isUnlocked && (
+                                  <div className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-slate-50 flex items-center justify-center">
+                                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-ping" />
+                                  </div>
+                                )}
+                             </div>
+                             <p className="text-[8px] font-bold text-slate-500 uppercase tracking-tighter leading-none">{milestone.count} {milestone.count === 1 ? 'Impact' : 'Impacts'}</p>
+                          </button>
+                        );
+                     })}
+                  </div>
+
+                  {/* Active Milestone Selected Detail Card */}
+                  <div className="p-5 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-3 relative overflow-hidden mb-8">
+                     <div className="flex items-start justify-between">
+                        <div>
+                           <span className={cn(
+                              "px-2 py-0.5 text-[8px] font-black uppercase tracking-widest rounded",
+                              (profile?.verifiedContributionsCount || 0) >= MILESTONES[selectedMilestoneIndex].count
+                                ? "bg-emerald-50 text-emerald-600 border border-emerald-100"
+                                : "bg-slate-100 text-slate-500"
+                           )}>
+                              {(profile?.verifiedContributionsCount || 0) >= MILESTONES[selectedMilestoneIndex].count ? "Unlocked Achievement" : "Locked Achievement"}
+                           </span>
+                           <h4 className="text-sm font-black text-slate-800 mt-1.5 leading-none">{MILESTONES[selectedMilestoneIndex].name}</h4>
+                        </div>
+                        <div className="text-right">
+                           <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Requirement</p>
+                           <p className="text-xs font-black text-slate-700">{MILESTONES[selectedMilestoneIndex].count} verified {MILESTONES[selectedMilestoneIndex].count === 1 ? 'impact' : 'impacts'}</p>
+                        </div>
+                     </div>
+                     
+                     <p className="text-xs text-slate-500 leading-relaxed font-medium">{MILESTONES[selectedMilestoneIndex].desc}</p>
+                     
+                     <div className="pt-2 border-t border-slate-100">
+                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1 font-mono">Impact Benefit</p>
+                        <p className="text-[11px] font-bold text-teal-600">{MILESTONES[selectedMilestoneIndex].benefit}</p>
+                     </div>
                   </div>
 
                   <div className="space-y-4">

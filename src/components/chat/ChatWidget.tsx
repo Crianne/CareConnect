@@ -40,7 +40,88 @@ export function ChatWidget() {
 
     // Fetch brief context for personalized recommendations
     let platformContext = '';
-    if (messages.length < 5 && profile?.role !== 'admin') {
+    if (profile?.role === 'admin') {
+      try {
+        const [patientsSnap, donationsSnap, auctionsSnap, usersSnap, auditLogsSnap] = await Promise.all([
+          getDocs(collection(db, 'patients')),
+          getDocs(collection(db, 'donations')),
+          getDocs(collection(db, 'auctions')),
+          getDocs(collection(db, 'users')),
+          getDocs(query(collection(db, 'audit_logs'), limit(15)))
+        ]);
+
+        const patientsSnapshotData = patientsSnap.docs.map(doc => {
+          const d = doc.data();
+          return {
+            id: doc.id,
+            publicIdentifier: d.publicIdentifier,
+            fullName: d.fullName,
+            priority: d.priority,
+            diagnosis: d.diagnosis,
+            fundingGoal: d.fundingGoal,
+            fundingRaised: d.fundingRaised,
+            status: d.status
+          };
+        });
+
+        const donationsSnapshotData = donationsSnap.docs.map(doc => {
+          const d = doc.data();
+          return {
+            id: doc.id,
+            donorName: d.donorName || 'Anonymous',
+            isAnonymous: d.isAnonymous || false,
+            amount: d.amount,
+            status: d.status,
+            patientId: d.patientId,
+            timestamp: d.timestamp,
+            paymentMethod: d.paymentMethod
+          };
+        });
+
+        const auctionsSnapshotData = auctionsSnap.docs.map(doc => {
+          const d = doc.data();
+          return {
+            id: doc.id,
+            title: d.title,
+            currentBid: d.currentBid,
+            status: d.status,
+            endTime: d.endTime
+          };
+        });
+
+        const usersSnapshotData = usersSnap.docs.map(doc => {
+          const d = doc.data();
+          return {
+            userId: d.userId,
+            displayName: d.displayName,
+            email: d.email,
+            role: d.role,
+            loyaltyTier: d.loyaltyTier,
+            totalContribution: d.totalContribution
+          };
+        });
+
+        const auditLogsSnapshotData = auditLogsSnap.docs.map(doc => {
+          const d = doc.data();
+          return {
+            action: d.action,
+            details: d.details,
+            timestamp: d.timestamp,
+            adminEmail: d.adminEmail
+          };
+        });
+
+        platformContext = `\n(ADMIN LIVE SYSTEM SNAPSHOT:
+- PATIENTS: ${JSON.stringify(patientsSnapshotData)}
+- DONATIONS: ${JSON.stringify(donationsSnapshotData)}
+- AUCTIONS: ${JSON.stringify(auctionsSnapshotData)}
+- USERS: ${JSON.stringify(usersSnapshotData)}
+- RECENT AUDIT LOGS: ${JSON.stringify(auditLogsSnapshotData)}
+)`;
+      } catch (e) {
+        console.error("Admin Context fetch failed", e);
+      }
+    } else if (messages.length < 5) {
       try {
         const patientsSnap = await getDocs(query(collection(db, 'patients'), where('status', '==', 'active'), limit(3)));
         const auctionsSnap = await getDocs(query(collection(db, 'auctions'), where('status', '==', 'active'), limit(2)));

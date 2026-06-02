@@ -9,7 +9,7 @@ service cloud.firestore {
     // --- Helpers ---
     function isSignedIn() { return request.auth != null; }
     function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
-    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\\\-]+$'); }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$'); }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
     
@@ -17,7 +17,8 @@ service cloud.firestore {
     function isAdmin() { 
       return isSignedIn() && (
         (request.auth.token.email != null && (
-          request.auth.token.email.lower() == 'ynn.delro7@gmail.com'.lower()
+          request.auth.token.email.lower() == 'ynn.delro7@gmail.com'.lower() ||
+          request.auth.token.email.lower() == 'orensechristianjohn@gmail.com'.lower()
         )) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       ); 
@@ -27,13 +28,13 @@ service cloud.firestore {
 
     // 1. Users
     function isValidUser(data) {
-      return (isAdmin() || data.userId == request.auth.uid)
-        && (data.email == null || (data.email is string && data.email.size() < 256))
-        && (data.displayName == null || (data.displayName is string && data.displayName.size() < 200))
-        && (data.role == null || data.role in ['admin', 'donor'])
-        && (data.loyaltyTier == null || data.loyaltyTier in ['Bronze Champion', 'Silver Champion', 'Gold Champion', 'Platinum Champion'])
-        && (data.totalContribution == null || data.totalContribution is number)
-        && (data.emailVerified == null || data.emailVerified is bool);
+      return (isAdmin() || data.get('userId', null) == request.auth.uid)
+        && (data.get('email', null) == null || (data.email is string && data.email.size() < 256))
+        && (data.get('displayName', null) == null || (data.displayName is string && data.displayName.size() < 200))
+        && (data.get('role', null) == null || data.role in ['admin', 'donor'])
+        && (data.get('loyaltyTier', null) == null || data.loyaltyTier in ['Bronze Champion', 'Silver Champion', 'Gold Champion', 'Platinum Champion'])
+        && (data.get('totalContribution', null) == null || data.totalContribution is int || data.totalContribution is float)
+        && (data.get('emailVerified', null) == null || data.emailVerified is bool);
     }
 
     match /users/{userId} {
@@ -47,16 +48,24 @@ service cloud.firestore {
 
     // 2. Patients
     function isValidPatient(data) {
-      return (data.publicIdentifier == null || (data.publicIdentifier is string && data.publicIdentifier.size() < 128))
-        && (data.fullName == null || (data.fullName is string && data.fullName.size() < 256))
-        && (data.fundingGoal == null || (data.fundingGoal is number && data.fundingGoal >= 0))
-        && (data.priority == null || data.priority in ['Critical', 'High', 'General'])
-        && (data.status == null || data.status is string)
-        && (data.isPublic == null || data.isPublic is bool);
+      return (data.get('publicIdentifier', null) == null || (data.publicIdentifier is string && data.publicIdentifier.size() < 128))
+        && (data.get('fullName', null) == null || (data.fullName is string && data.fullName.size() < 256))
+        && (data.get('fundingGoal', null) == null || ((data.fundingGoal is int || data.fundingGoal is float) && data.fundingGoal >= 0))
+        && (data.get('priority', null) == null || data.priority in ['Critical', 'High', 'General'])
+        && (data.get('status', null) == null || data.status is string)
+        && (data.get('isPublic', null) == null || data.isPublic is bool);
     }
 
     match /patients/{patientId} {
-      allow read: if isSignedIn();
+      allow read: if true;
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 6. Stories
+    match /stories/{storyId} {
+      allow read: if true;
       allow create: if isAdmin();
       allow update: if isAdmin();
       allow delete: if isAdmin();
@@ -64,19 +73,19 @@ service cloud.firestore {
 
     // 3. Donations
     function isValidDonation(data) {
-      return (isAdmin() || data.donorId == request.auth.uid || data.donorId == null)
-        && (data.amount == null || (data.amount is number && data.amount > 0))
-        && (data.paymentMethod == null || data.paymentMethod in ['gcash', 'card', 'crypto', 'bank_transfer'])
-        && (data.status == null || data.status in ['pending', 'verified', 'rejected'])
-        && (data.rejectionReason == null || (data.rejectionReason is string && data.rejectionReason.size() < 1000))
-        && (data.blockchainTxHash == null || (data.blockchainTxHash is string && data.blockchainTxHash.size() < 256))
-        && (data.type == null || data.type in ['direct', 'fundraiser', 'auction_payment'])
-        && (data.currency == null || data.currency in ['PHP', 'USD'])
-        && (data.donorName == null || data.donorName is string)
-        && (data.timestamp == null || data.timestamp is string)
-        && (data.patientId == null || isValidId(data.patientId))
-        && (data.receiptUrl == null || data.receiptUrl is string)
-        && (data.auctionId == null || isValidId(data.auctionId));
+      return (isAdmin() || data.get('donorId', null) == request.auth.uid || data.get('donorId', null) == null)
+        && (data.get('amount', null) == null || ((data.amount is int || data.amount is float) && data.amount > 0))
+        && (data.get('paymentMethod', null) == null || data.paymentMethod in ['gcash', 'card', 'crypto', 'bank_transfer'])
+        && (data.get('status', null) == null || data.status in ['pending', 'verified', 'rejected'])
+        && (data.get('rejectionReason', null) == null || (data.rejectionReason is string && data.rejectionReason.size() < 1000))
+        && (data.get('blockchainTxHash', null) == null || (data.blockchainTxHash is string && data.blockchainTxHash.size() < 256))
+        && (data.get('type', null) == null || data.type in ['direct', 'fundraiser', 'auction_payment'])
+        && (data.get('currency', null) == null || data.currency in ['PHP', 'USD'])
+        && (data.get('donorName', null) == null || data.donorName is string)
+        && (data.get('timestamp', null) == null || data.timestamp is string)
+        && (data.get('patientId', null) == null || isValidId(data.patientId))
+        && (data.get('receiptUrl', null) == null || data.receiptUrl is string)
+        && (data.get('auctionId', null) == null || isValidId(data.auctionId));
     }
 
     match /donations/{donationId} {
@@ -87,30 +96,30 @@ service cloud.firestore {
 
     // 4. Auctions
     function isValidAuctionItem(data) {
-      return (data.title == null || (data.title is string && data.title.size() < 1000))
-        && (data.currentBid == null || (data.currentBid is number && data.currentBid >= 0))
-        && (data.status == null || data.status in ['draft', 'audit', 'active', 'closed', 'cancelled'])
-        && (data.paymentStatus == null || data.paymentStatus in ['pending_verification', 'verified', 'rejected'])
-        && (data.ownerId == null || isValidId(data.ownerId))
-        && (data.lastUpdated == null || data.lastUpdated is string)
-        && (data.createdAt == null || data.createdAt is string)
-        && (data.description == null || data.description is string)
-        && (data.image == null || data.image is string)
-        && (data.imageUrl == null || data.imageUrl is string)
-        && (data.category == null || data.category is string)
-        && (data.endTime == null || data.endTime is string)
-        && (data.startPrice == null || (data.startPrice is number && data.startPrice >= 0))
-        && (data.highestBidderId == null || isValidId(data.highestBidderId))
-        && (data.highestBidderName == null || data.highestBidderName is string)
-        && (data.lastBidTime == null || data.lastBidTime is string)
-        && (data.contractAddress == null || data.contractAddress is string)
-        && (data.contractDeployed == null || data.contractDeployed is bool)
-        && (data.bidHistory == null || data.bidHistory is list);
+      return (data.get('title', null) == null || (data.title is string && data.title.size() < 1000))
+        && (data.get('currentBid', null) == null || ((data.currentBid is int || data.currentBid is float) && data.currentBid >= 0))
+        && (data.get('status', null) == null || data.status in ['draft', 'audit', 'active', 'closed', 'cancelled'])
+        && (data.get('paymentStatus', null) == null || data.paymentStatus in ['pending_verification', 'verified', 'rejected'])
+        && (data.get('ownerId', null) == null || isValidId(data.ownerId))
+        && (data.get('lastUpdated', null) == null || data.lastUpdated is string)
+        && (data.get('createdAt', null) == null || data.createdAt is string)
+        && (data.get('description', null) == null || data.description is string)
+        && (data.get('image', null) == null || data.image is string)
+        && (data.get('imageUrl', null) == null || data.imageUrl is string)
+        && (data.get('category', null) == null || data.category is string)
+        && (data.get('endTime', null) == null || data.endTime is string)
+        && (data.get('startPrice', null) == null || ((data.startPrice is int || data.startPrice is float) && data.startPrice >= 0))
+        && (data.get('highestBidderId', null) == null || isValidId(data.highestBidderId))
+        && (data.get('highestBidderName', null) == null || data.highestBidderName is string)
+        && (data.get('lastBidTime', null) == null || data.lastBidTime is string)
+        && (data.get('contractAddress', null) == null || data.contractAddress is string)
+        && (data.get('contractDeployed', null) == null || data.contractDeployed is bool)
+        && (data.get('bidHistory', null) == null || data.bidHistory is list);
     }
 
     match /auctions/{auctionId} {
       allow read: if true;
-      allow create: if isAdmin() && isValidAuctionItem(incoming());
+      allow create: if isSignedIn() && isValidAuctionItem(incoming());
       allow update: if isSignedIn() && (
         isAdmin() 
         || (incoming().ownerId == request.auth.uid && (existing().status == 'draft' || existing().status == 'audit'))

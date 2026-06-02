@@ -10,6 +10,61 @@ import copy from 'copy-to-clipboard';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Info, Copy, Check, X as CloseIcon } from 'lucide-react';
 
+const TIER_DETAILS = [
+  {
+    tier: LoyaltyTier.BRONZE,
+    minPHP: "₱0 to ₱9,999",
+    color: "text-orange-600 bg-orange-50 border-orange-200",
+    icon: Heart,
+    shortDesc: "Entry supporter position. Commencing a legacy of decentralized aid representation.",
+    benefits: [
+      "Standard community contributor badge",
+      "Immutable donor profile registered on-chain",
+      "Access to real-time pediatric oncology warrior progress logs",
+      "Full access to the 24/7 AI-driven transparent concierge"
+    ]
+  },
+  {
+    tier: LoyaltyTier.SILVER,
+    minPHP: "₱10,000+",
+    color: "text-slate-600 bg-slate-50 border-slate-200",
+    icon: Sparkles,
+    shortDesc: "Dedicated care patron. Elevating the frequency of patient chemotherapy support.",
+    benefits: [
+      "Prioritized manual audit verification of submitted GCash receipts",
+      "On-chain silver-level contributor badge and metadata tag",
+      "Exclusive access to foundations monthly live-audited ledger sheets",
+      "Reserved access to standard category charity auctions and art lots"
+    ]
+  },
+  {
+    tier: LoyaltyTier.GOLD,
+    minPHP: "₱50,000+",
+    color: "text-amber-600 bg-amber-50 border-amber-200",
+    icon: Trophy,
+    shortDesc: "Elite healthcare booster. Deepening transparency and milestone funding speed.",
+    benefits: [
+      "24-hour early-bidding preview privileges on luxury donation lots",
+      "Zero-fee treasury distribution triggers on dedicated cases",
+      "Quarterly direct advisory reports with clinical oncology directors",
+      "Interactive digital gold star on the public leaderboard"
+    ]
+  },
+  {
+    tier: LoyaltyTier.PLATINUM,
+    minPHP: "₱200,000+",
+    color: "text-teal-600 bg-teal-50 border-teal-200",
+    icon: ShieldCheck,
+    shortDesc: "Decentralized consensus oracle governor. Steering structural medical pipelines.",
+    benefits: [
+      "Direct IPFS oracle database consensus vote delegation",
+      "On-chain voting rights on foundation contingency emergency pools",
+      "Permanent cryptographic ledger hero index inscription",
+      "VIP invitation to hospital ward physical oncology handovers"
+    ]
+  }
+];
+
 export function Dashboard() {
   const { profile } = useAuth();
   const [stats, setStats] = useState({ totalPatients: 0, totalAid: 0, activeAuctions: 0 });
@@ -21,6 +76,7 @@ export function Dashboard() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const [showTxViewer, setShowTxViewer] = useState<Donation | null>(null);
+  const [showTierMatrix, setShowTierMatrix] = useState(false);
 
   const handleCopy = (text: string, id: string) => {
     copy(text);
@@ -45,8 +101,7 @@ export function Dashboard() {
     const pQuery = query(
       collection(db, 'donations'), 
       where('donorId', '==', profile.userId),
-      orderBy('timestamp', 'desc'),
-      limit(20)
+      orderBy('timestamp', 'desc')
     );
     const unsubPersonal = onSnapshot(pQuery, (snapshot) => {
       const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Donation));
@@ -107,6 +162,46 @@ export function Dashboard() {
     };
   }, [profile]);
 
+  // Reconcile user profile statistics with the actual donations list
+  useEffect(() => {
+    if (!profile || personalDonations.length === 0) return;
+
+    const verifiedDons = personalDonations.filter(d => d.status === 'verified');
+    const calculatedTotal = verifiedDons.reduce((sum, d) => sum + (d.amount || 0), 0);
+    const calculatedCount = verifiedDons.length;
+
+    const currentTotal = profile.totalContribution || 0;
+    const currentCount = profile.verifiedContributionsCount || 0;
+
+    if (currentTotal !== calculatedTotal || currentCount !== calculatedCount) {
+      console.log(`Reconciling user stats in Dashboard. Firestore: total=${currentTotal}, count=${currentCount}. Actual: total=${calculatedTotal}, count=${calculatedCount}`);
+      
+      const updateStats = async () => {
+        try {
+          const { doc, updateDoc } = await import('firebase/firestore');
+          const { db } = await import('../lib/firebase');
+          const userRef = doc(db, 'users', profile.userId);
+          
+          let newTier = profile.loyaltyTier || LoyaltyTier.BRONZE;
+          if (calculatedTotal >= 200000) newTier = LoyaltyTier.PLATINUM;
+          else if (calculatedTotal >= 50000) newTier = LoyaltyTier.GOLD;
+          else if (calculatedTotal >= 10000) newTier = LoyaltyTier.SILVER;
+          else newTier = LoyaltyTier.BRONZE;
+
+          await updateDoc(userRef, {
+            totalContribution: calculatedTotal,
+            verifiedContributionsCount: calculatedCount,
+            loyaltyTier: newTier
+          });
+        } catch (e) {
+          console.error("Failed to update reconciled stats in Firestore:", e);
+        }
+      };
+      
+      updateStats();
+    }
+  }, [personalDonations, profile?.userId]);
+
   const handleGenerateReport = () => {
     alert("Impact Report for May 2026 generated. Deployed as PDF to Foundation Blockchain Vault.");
   };
@@ -147,9 +242,11 @@ export function Dashboard() {
                   </button>
                   <button 
                     onClick={() => {
-                        window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin' }));
-                        // We can't easily trigger the tab change inside AdminHub from here without more complex state
-                        // but navigating to Admin is a start.
+                        localStorage.setItem('admin_sub_tab', 'reports');
+                        window.dispatchEvent(new CustomEvent('nav-change', { 
+                          detail: 'admin',
+                          subTab: 'reports' 
+                        } as any));
                     }}
                     className="px-6 py-2.5 bg-white text-slate-900 rounded-lg font-bold hover:bg-slate-50 transition-all text-sm"
                   >
@@ -224,9 +321,64 @@ export function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Warrior Progression (Loyalty) - Hidden for admins */}
-        {profile?.role !== UserRole.ADMIN ? (
+      <div className={cn("grid grid-cols-1 gap-8", profile?.role === UserRole.ADMIN ? "lg:grid-cols-2" : "lg:grid-cols-3")}>
+        {/* Warrior Progression (Loyalty) for general users or Foundation Audit Trail for admin */}
+        {profile?.role === UserRole.ADMIN ? (
+          <div className="lg:col-span-1 p-0 bg-slate-900 rounded-xl border border-slate-800 shadow-2xl relative overflow-hidden flex flex-col h-[500px] transition-all duration-300 hover:shadow-lg">
+             <div className="relative z-10 flex flex-col h-full">
+                <div className="p-6 border-b border-white/10 flex items-center justify-between bg-slate-950/50">
+                   <div className="flex flex-col">
+                      <div className="flex items-center gap-2 mb-1">
+                         <ShieldCheck className="w-5 h-5 text-teal-400" />
+                         <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Foundation Audit Trail</span>
+                      </div>
+                      <span className="text-[8px] text-white/40 uppercase tracking-widest font-bold">Administrative Real-Time History</span>
+                   </div>
+                   <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.8)]" />
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
+                   {recentAuditLogs.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-center px-8 opacity-20">
+                         <Activity className="w-12 h-12 text-white mb-4 animate-pulse" />
+                         <p className="text-[10px] font-bold text-white uppercase tracking-widest">Awaiting system events...</p>
+                      </div>
+                   ) : recentAuditLogs.map((log) => (
+                      <div key={log.id} className="p-4 bg-white/5 rounded-2xl border border-white/10 hover:bg-white/10 transition-all cursor-pointer group">
+                         <div className="flex items-center justify-between mb-2">
+                            <span className="px-2 py-0.5 bg-teal-500/20 text-teal-400 text-[8px] font-black uppercase tracking-tighter rounded border border-teal-500/30">
+                               {log.action}
+                            </span>
+                            <span className="text-[9px] text-white/40 font-mono">
+                               {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                         </div>
+                         <p className="text-[11px] text-white/80 font-bold leading-snug mb-2 line-clamp-2">{log.details}</p>
+                         <div className="flex items-center gap-2">
+                            <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[8px] font-bold text-teal-400 border border-white/5 uppercase">
+                               {log.adminEmail?.charAt(0) || 'A'}
+                            </div>
+                            <span className="text-[9px] text-white/30 font-medium truncate italic">{log.adminEmail}</span>
+                         </div>
+                      </div>
+                   ))}
+                </div>
+                
+                <div className="p-6 mt-auto bg-gradient-to-t from-slate-950 to-transparent">
+                   <button 
+                     onClick={() => {
+                       localStorage.setItem('admin_sub_tab', 'control');
+                       window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin', subTab: 'control' } as any));
+                     }}
+                     className="w-full py-3 bg-white/10 hover:bg-white border border-white/10 hover:text-slate-900 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                   >
+                     Open Audit Hub
+                   </button>
+                </div>
+             </div>
+             <div className="absolute top-0 right-0 w-64 h-64 bg-teal-500/5 rounded-full blur-3xl -mr-32 -mt-32" />
+          </div>
+        ) : (
           <div className="lg:col-span-1 glass-card p-8 flex flex-col items-center text-center relative overflow-hidden">
              <div className="absolute top-0 right-0 w-32 h-32 bg-brand-primary/5 rounded-full -mr-16 -mt-16" />
              
@@ -292,113 +444,71 @@ export function Dashboard() {
                    <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">On-Chain</p>
                 </div>
              </div>
-          </div>
-        ) : (
-          <div className="lg:col-span-1 bg-slate-950 border border-white/10 shadow-2xl relative overflow-hidden flex flex-col h-[500px] rounded-[2.5rem]">
-             <div className="relative z-10 flex flex-col h-full font-sans">
-                <div className="p-6 border-b border-white/20 flex items-center justify-between bg-slate-900 shadow-[0_4px_20px_rgba(0,0,0,0.5)]">
-                   <div className="flex flex-col">
-                      <div className="flex items-center gap-2 mb-1">
-                         <ShieldCheck className="w-5 h-5 text-teal-400 drop-shadow-[0_0_8px_rgba(45,212,191,0.5)]" />
-                         <span className="text-[12px] font-black uppercase tracking-[0.25em] text-teal-400 drop-shadow-[0_0_10px_rgba(45,212,191,0.4)]">Foundation Audit Trail</span>
-                      </div>
-                      <span className="text-[9px] text-teal-200/50 uppercase tracking-[0.3em] font-black">Administrative Real-Time History</span>
-                   </div>
-                   <div className="w-3 h-3 bg-teal-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(20,184,166,0.9)] border-2 border-teal-300" />
-                </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-                   {/* We'll use a small internal component or just map the audit logs if we had them here. 
-                       Since we don't have auditLogs in Dashboard state yet, I'll add the listener. */}
-                   {recentAuditLogs.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-center px-8 opacity-20">
-                         <Activity className="w-12 h-12 text-white mb-4 animate-pulse" />
-                         <p className="text-[10px] font-bold text-white uppercase tracking-widest">Awaiting system events...</p>
-                      </div>
-                   ) : recentAuditLogs.map((log) => (
-                      <div key={log.id} className="p-4 bg-white/5 rounded-2xl border border-white/10 hover:bg-white/10 transition-all cursor-pointer group">
-                         <div className="flex items-center justify-between mb-2">
-                            <span className="px-2 py-0.5 bg-teal-500/20 text-teal-400 text-[8px] font-black uppercase tracking-tighter rounded border border-teal-500/30">
-                               {log.action}
-                            </span>
-                            <span className="text-[9px] text-white/40 font-mono">
-                               {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                         </div>
-                         <p className="text-[11px] text-white/80 font-bold leading-snug mb-2 line-clamp-2">{log.details}</p>
-                         <div className="flex items-center gap-2">
-                            <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[8px] font-bold text-teal-400 border border-white/5 uppercase">
-                               {log.adminEmail?.charAt(0) || 'A'}
-                            </div>
-                            <span className="text-[9px] text-white/30 font-medium truncate italic">{log.adminEmail}</span>
-                         </div>
-                      </div>
-                   ))}
-                </div>
-                
-                <div className="p-6 mt-auto bg-gradient-to-t from-slate-950 to-transparent">
-                   <button 
-                     onClick={() => window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin' }))}
-                     className="w-full py-3 bg-white/10 hover:bg-white border border-white/10 hover:text-slate-900 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
-                   >
-                     Open Audit Hub
-                   </button>
-                </div>
+             <div className="w-full mt-6 pt-6 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowTierMatrix(true)}
+                  className="w-full py-2.5 bg-slate-50 hover:bg-brand-primary/10 text-brand-primary text-[10px] font-black uppercase tracking-widest rounded-xl transition-all border border-slate-100 flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5" /> Compare Tier Perks
+                </button>
              </div>
-             <div className="absolute top-0 right-0 w-64 h-64 bg-teal-500/5 rounded-full blur-3xl -mr-32 -mt-32" />
           </div>
         )}
 
-        {/* My Activity / Submissions Feed */}
-        <div className="lg:col-span-1 glass-card flex flex-col overflow-hidden">
-          <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-              <Clock className="w-4 h-4 text-brand-primary" />
-              My Audit Status
-            </h3>
-            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Recent Submissions</span>
-          </div>
-          <div className="p-2 space-y-1 overflow-y-auto max-h-[400px] no-scrollbar">
-            {personalDonations.length === 0 ? (
-              <div className="p-8 text-center">
-                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">No Submissions Found</p>
-              </div>
-            ) : personalDonations.map((d) => (
-              <div key={d.id} className="p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-slate-100 group">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-slate-800">₱{d.amount.toLocaleString()}</span>
-                    <span className={cn(
-                      "text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border",
-                      d.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
-                      d.status === 'rejected' ? "bg-red-50 text-red-600 border-red-100" :
-                      "bg-amber-50 text-amber-600 border-amber-100"
-                    )}>
-                      {d.status}
+        {/* My Activity / Submissions Feed - Hidden for admins */}
+        {profile?.role !== UserRole.ADMIN && (
+          <div className="lg:col-span-1 glass-card flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                <Clock className="w-4 h-4 text-brand-primary" />
+                My Audit Status
+              </h3>
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Recent Submissions</span>
+            </div>
+            <div className="p-2 space-y-1 overflow-y-auto max-h-[400px] no-scrollbar">
+              {personalDonations.length === 0 ? (
+                <div className="p-8 text-center">
+                   <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">No Submissions Found</p>
+                </div>
+              ) : personalDonations.map((d) => (
+                <div key={d.id} className="p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-slate-100 group">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-800">₱{d.amount.toLocaleString()}</span>
+                      <span className={cn(
+                        "text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border",
+                        d.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                        d.status === 'rejected' ? "bg-red-50 text-red-600 border-red-100" :
+                        "bg-amber-50 text-amber-600 border-amber-100"
+                      )}>
+                        {d.status}
+                      </span>
+                    </div>
+                    <span className="text-[9px] font-bold text-slate-400">
+                      {new Date(d.timestamp).toLocaleDateString()}
                     </span>
                   </div>
-                  <span className="text-[9px] font-bold text-slate-400">
-                    {new Date(d.timestamp).toLocaleDateString()}
-                  </span>
+                  
+                  {d.status === 'rejected' && d.rejectionReason && (
+                    <div className="mt-2 p-2 bg-red-50/50 rounded-lg border border-red-100/50">
+                      <p className="text-[9px] font-bold text-red-700 uppercase tracking-widest mb-1 italic">Audit Failure Reason:</p>
+                      <p className="text-[10px] text-red-600 leading-tight">{d.rejectionReason}</p>
+                    </div>
+                  )}
+                  
+                  {d.blockchainTxHash && (
+                     <div className="mt-2 flex items-center gap-2">
+                        <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
+                        <span className="text-[9px] font-mono text-emerald-600 font-bold">{d.blockchainTxHash.substring(0, 16)}...</span>
+                     </div>
+                  )}
                 </div>
-                
-                {d.status === 'rejected' && d.rejectionReason && (
-                  <div className="mt-2 p-2 bg-red-50/50 rounded-lg border border-red-100/50">
-                    <p className="text-[9px] font-bold text-red-700 uppercase tracking-widest mb-1 italic">Audit Failure Reason:</p>
-                    <p className="text-[10px] text-red-600 leading-tight">{d.rejectionReason}</p>
-                  </div>
-                )}
-                
-                {d.blockchainTxHash && (
-                   <div className="mt-2 flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full" />
-                      <span className="text-[9px] font-mono text-emerald-600 font-bold">{d.blockchainTxHash.substring(0, 16)}...</span>
-                   </div>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Impact Chart moved to separate row? No, keep logic simple. Replacing original grid. */}
         {/* Re-adding Impact Chart correctly in the 3-column layout */}
@@ -449,10 +559,10 @@ export function Dashboard() {
                   </div>
                   <div className="flex items-center gap-3">
                      <div className="w-8 h-8 bg-white rounded-full border border-slate-200 flex items-center justify-center text-[10px] font-bold text-teal-600 shadow-sm">
-                        {(donation.donorName || 'Anonymous Warrior').charAt(0)}
+                        {(donation.isAnonymous ? 'Anonymous Supporter' : (donation.donorName || 'Anonymous Warrior')).charAt(0)}
                      </div>
                      <div>
-                        <p className="text-xs font-bold text-slate-700">{donation.donorName || 'Anonymous Warrior'}</p>
+                        <p className="text-xs font-bold text-slate-700">{donation.isAnonymous ? 'Anonymous Supporter' : (donation.donorName || 'Anonymous Warrior')}</p>
                         <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest leading-none">Verified Donor</p>
                      </div>
                   </div>
@@ -599,6 +709,99 @@ export function Dashboard() {
                   className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold uppercase text-[10px] tracking-widest"
                 >
                   Close Diagnostics
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showTierMatrix && (
+          <div className="fixed inset-0 z-[160] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-5xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col my-8"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-brand-primary" />
+                    Warrior Path: Loyalty Tier Matrix
+                  </h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-wide">
+                    Compare differentiated privileges and smart-contract triggers across levels.
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setShowTierMatrix(false)} 
+                  className="p-2 hover:bg-slate-200 rounded-full transition-colors cursor-pointer"
+                >
+                  <CloseIcon className="w-4 h-4 text-slate-500" />
+                </button>
+              </div>
+
+              <div className="p-6 md:p-8 overflow-y-auto max-h-[70vh] space-y-6 scrollbar-thin">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {TIER_DETAILS.map((t, idx) => {
+                    const isCurrent = profile?.loyaltyTier === t.tier || (!profile?.loyaltyTier && t.tier === LoyaltyTier.BRONZE);
+                    return (
+                      <div 
+                        key={idx} 
+                        className={cn(
+                          "p-6 rounded-3xl border flex flex-col justify-between transition-all relative overflow-hidden",
+                          isCurrent 
+                            ? "bg-gradient-to-b from-brand-primary/5 to-transparent border-brand-primary/40 ring-1 ring-brand-primary/20 shadow-md" 
+                            : "bg-white border-slate-100 hover:border-slate-300"
+                        )}
+                      >
+                        {isCurrent && (
+                          <div className="absolute top-0 right-0 bg-brand-primary text-white text-[8px] font-black uppercase tracking-widest px-3 py-1 rounded-bl-xl">
+                            Active Rank
+                          </div>
+                        )}
+
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2">
+                            <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center border", t.color)}>
+                              <t.icon className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-black text-slate-800 uppercase tracking-widest">{t.tier.split(' ')[0]}</h4>
+                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">{t.minPHP}</p>
+                            </div>
+                          </div>
+
+                          <p className="text-[11px] text-slate-500 leading-relaxed font-semibold">
+                            {t.shortDesc}
+                          </p>
+
+                          <div className="space-y-2 pt-2 border-t border-slate-100">
+                            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Privileges:</p>
+                            {t.benefits.map((b, bIdx) => (
+                              <div key={bIdx} className="flex items-start gap-1.5">
+                                <Check className="w-3" />
+                                <span className="text-[10px] text-slate-600 leading-tight font-medium">
+                                  {b}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 border-t border-slate-100 flex justify-end">
+                <button 
+                  onClick={() => setShowTierMatrix(false)}
+                  className="px-6 py-2.5 bg-slate-950 text-white rounded-xl font-bold uppercase text-[10px] tracking-widest cursor-pointer hover:bg-slate-900 transition-colors"
+                >
+                  Close Matrix
                 </button>
               </div>
             </motion.div>

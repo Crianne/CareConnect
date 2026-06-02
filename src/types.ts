@@ -58,6 +58,7 @@ export interface Donation {
   id: string;
   donorId: string;
   donorName?: string;
+  isAnonymous?: boolean;
   patientId?: string;
   amount: number;
   currency: string;
@@ -118,4 +119,15 @@ export interface AppConfiguration {
   maintenanceMode: boolean;
   allowPublicSubmissions: boolean;
   privacyNotice: string;
+}
+
+export interface SurvivorStory {
+  id: string;
+  childName: string;
+  age: string;
+  message: string;
+  fundsRaised: string;
+  blockchainHash: string;
+  tag: string;
+  createdAt: string;
 }
