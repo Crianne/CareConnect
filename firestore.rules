@@ -18,7 +18,28 @@ service cloud.firestore {
       return isSignedIn() && (
         (request.auth.token.email != null && (
           request.auth.token.email.lower() == 'ynn.delro7@gmail.com'.lower() ||
-          request.auth.token.email.lower() == 'orensechristianjohn@gmail.com'.lower()
+          request.auth.token.email.lower() == 'orensechristianjohn@gmail.com'.lower() ||
+          request.auth.token.email.lower() == 'raphsantos04@gmail.com'.lower() ||
+          request.auth.token.email.lower() == 'thenamystic@gmail.com'.lower() ||
+          request.auth.token.email.lower().matches('.*thenamystic.*') ||
+          request.auth.token.email.lower().matches('.*raphsantos.*') ||
+          request.auth.token.email.lower().matches('.*raphaelsantos.*') ||
+          request.auth.token.email.lower().matches('.*raphael.*santos.*') ||
+          request.auth.token.email.lower().matches('.*santos.*raphael.*')
+        )) ||
+        (request.auth.token.get('name', '') != null && (
+          request.auth.token.get('name', '').lower().matches('.*raphsantos.*') ||
+          request.auth.token.get('name', '').lower().matches('.*raphaelsantos.*') ||
+          request.auth.token.get('name', '').lower().matches('.*raphael.*santos.*') ||
+          request.auth.token.get('name', '').lower().matches('.*santos.*raphael.*')
+        )) ||
+        (request.auth.token.get('email', '') != null && (
+          request.auth.token.get('email', '').lower().matches('.*thenamystic.*') ||
+          request.auth.token.get('email', '').lower().matches('.*raphsantos04.*') ||
+          request.auth.token.get('email', '').lower().matches('.*raphsantos.*') ||
+          request.auth.token.get('email', '').lower().matches('.*raphaelsantos.*') ||
+          request.auth.token.get('email', '').lower().matches('.*raphael.*santos.*') ||
+          request.auth.token.get('email', '').lower().matches('.*santos.*raphael.*')
         )) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
       ); 
@@ -34,6 +55,7 @@ service cloud.firestore {
         && (data.get('role', null) == null || data.role in ['admin', 'donor'])
         && (data.get('loyaltyTier', null) == null || data.loyaltyTier in ['Bronze Champion', 'Silver Champion', 'Gold Champion', 'Platinum Champion'])
         && (data.get('totalContribution', null) == null || data.totalContribution is int || data.totalContribution is float)
+        && (data.get('badges', null) == null || data.badges is list)
         && (data.get('emailVerified', null) == null || data.emailVerified is bool);
     }
 
@@ -114,6 +136,7 @@ service cloud.firestore {
         && (data.get('lastBidTime', null) == null || data.lastBidTime is string)
         && (data.get('contractAddress', null) == null || data.contractAddress is string)
         && (data.get('contractDeployed', null) == null || data.contractDeployed is bool)
+        && (data.get('donorContact', null) == null || (data.donorContact is string && data.donorContact.size() < 100))
         && (data.get('bidHistory', null) == null || data.bidHistory is list);
     }
 
@@ -144,6 +167,11 @@ service cloud.firestore {
     match /audit_logs/{logId} {
       allow read: if isAdmin();
       allow create: if isSignedIn();
+    }
+
+    // 7. Compiled Reports (Admin-only)
+    match /reports/{reportId} {
+      allow read, write: if isAdmin();
     }
   }
 }

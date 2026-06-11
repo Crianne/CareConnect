@@ -7,6 +7,8 @@ import { Gavel, Clock, Trophy, ShieldCheck, Hammer, Share2, Upload, Trash2, Copy
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { submitBidToSmartContract } from '../services/blockchain';
+import { DwellTooltip } from './DwellTooltip';
+import { TitleExplainer } from './TitleExplainer';
 
 export function AuctionSection() {
   const { profile } = useAuth();
@@ -14,7 +16,7 @@ export function AuctionSection() {
   const [biddingOn, setBiddingOn] = useState<AuctionItem | null>(null);
   const [bidAmount, setBidAmount] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [newItem, setNewItem] = useState({ title: '', description: '', minBid: '', image: null as string | null });
+  const [newItem, setNewItem] = useState({ title: '', description: '', minBid: '', donorContact: '', image: null as string | null });
   const [selectedItemHistory, setSelectedItemHistory] = useState<Bid[]>([]);
   const [showHistory, setShowHistory] = useState<string | null>(null);
   const [checkoutItem, setCheckoutItem] = useState<AuctionItem | null>(null);
@@ -249,6 +251,7 @@ export function AuctionSection() {
         highestBidderName: 'Reserve Pool',
         status: 'draft',
         ownerId: profile.userId,
+        donorContact: newItem.donorContact,
         endTime: new Date(Date.now() + 86400000 * 7).toISOString(), // Default 7 days
         createdAt: new Date().toISOString(),
         lastUpdated: new Date().toISOString()
@@ -257,7 +260,7 @@ export function AuctionSection() {
       await logAction('SUBMIT_AUCTION_ITEM', `auctions/${auctionRef.id}`, `New auction item submitted: ${newItem.title}`);
       
       setIsSubmitting(false);
-      setNewItem({ title: '', description: '', minBid: '', image: null });
+      setNewItem({ title: '', description: '', minBid: '', donorContact: '', image: null });
       alert('Asset submitted to foundation audit registry.');
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, 'auctions');
@@ -330,7 +333,18 @@ export function AuctionSection() {
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded bg-teal-50 text-teal-700 text-[10px] font-bold uppercase tracking-widest border border-teal-100">
                  Foundation Auctions
               </div>
-              <h2 className="text-3xl font-bold tracking-tight text-slate-800">Rare Art & Memorabilia</h2>
+              <TitleExplainer
+                featureName="Charity Auctions"
+                simpleExplanation="Charity Auctions are fun bidding events where generous supporters donate pieces like arts, collectibles, or books. You can bid on them, and 100% of the bid money helps pay for pediatric oncology chemotherapy."
+                badge="Generosity Auctions"
+                bulletPoints={[
+                  "Safely bid on unique artworks and signed collectibles",
+                  "Approved bid totals go 100% to patients",
+                  "Keeps a public bid history of active participants"
+                ]}
+              >
+                <h2 className="text-3xl font-bold tracking-tight text-slate-800 mb-0">Charity Auctions</h2>
+              </TitleExplainer>
               <p className="text-slate-500 text-sm leading-relaxed max-w-md">
                 Participate in high-value asset auctions where 100% of proceeds are automatically routed to our verified charity wallet via Polygon smart contracts.
               </p>
@@ -389,6 +403,17 @@ export function AuctionSection() {
                       className="w-full bg-slate-50 px-5 py-4 rounded-2xl border border-slate-100 text-sm font-medium outline-none focus:ring-4 ring-brand-primary/10 transition-all"
                       value={newItem.minBid}
                       onChange={e => setNewItem(prev => ({ ...prev, minBid: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Donor Contact Number (For Winner Verification)</label>
+                    <input 
+                      required
+                      type="tel"
+                      placeholder="e.g. +63 917 123 4567"
+                      className="w-full bg-slate-50 px-5 py-4 rounded-2xl border border-slate-100 text-sm font-medium outline-none focus:ring-4 ring-brand-primary/10 transition-all"
+                      value={newItem.donorContact}
+                      onChange={e => setNewItem(prev => ({ ...prev, donorContact: e.target.value }))}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -498,6 +523,7 @@ export function AuctionSection() {
                       </div>
                     </div>
                   )}
+
                </div>
 
               <div className="p-8 space-y-6 flex-1">
@@ -559,7 +585,30 @@ export function AuctionSection() {
                            (item.status === 'active' && !isTimeUp) ? "bg-green-500 animate-pulse" : 
                            (item.status === 'closed' || isTimeUp) ? "bg-red-400" : "bg-amber-400"
                          )} />
-                         <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">
+                         <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest block" style={{ display: 'none' }} />
+                         <DwellTooltip
+                           title={
+                             (item.status === 'active' && !isTimeUp) ? "Active Funding Pool" :
+                             (item.status === 'closed' || isTimeUp) ? "Concluded Campaign2" :
+                             "Under Audit / Draft"
+                           }
+                           description={
+                             (item.status === 'active' && !isTimeUp) ? "This auction is active and currently accepting authenticated bids from registered sponsors." :
+                             (item.status === 'closed' || isTimeUp) ? "Bidding time has expired. Smart contracts are locking final allocations to the designated pediatric warrior." :
+                             "Currently undergoing compliance verification, target budget validation, or local draft staging."
+                           }
+                           statusType={
+                             (item.status === 'active' && !isTimeUp) ? "verified" :
+                             (item.status === 'closed' || isTimeUp) ? "rejected" :
+                             "pending"
+                           }
+                         >
+                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest cursor-help">
+                              {(item.status === 'active' && !isTimeUp) ? 'Active Pool' : 
+                               (item.status === 'closed' || isTimeUp) ? 'Concluded' : 'Under Audit'}
+                            </span>
+                         </DwellTooltip>
+                         <span style={{ display: 'none' }}>
                            {(item.status === 'active' && !isTimeUp) ? 'Active Pool' : 
                             (item.status === 'closed' || isTimeUp) ? 'Concluded' : 'Under Audit'}
                          </span>
@@ -568,15 +617,46 @@ export function AuctionSection() {
                  )}
               </div>
 
+                  {isWinner && (
+                    <div className="p-4 bg-emerald-50 border border-emerald-100/60 rounded-2xl text-left animate-in fade-in duration-300 mb-4 mx-8 space-y-3">
+                      <div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-emerald-800 font-sans">Bidding Settled to Foundation</p>
+                        <p className="text-[10px] text-slate-600 mt-1 leading-relaxed font-sans">
+                          All winning bid proceeds are received directly by the foundation's secure charity wallet to support patient medical care.
+                        </p>
+                      </div>
+                      
+                      {item.donorContact && (
+                        <div className="pt-2 border-t border-emerald-100">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-800 font-sans">Organize Handover with Donor</p>
+                          <p className="text-xs font-semibold text-slate-700 mt-1 font-sans">Donor Phone / Mobile:</p>
+                          <p className="text-sm font-bold text-teal-950 font-mono mt-0.5 select-all">{item.donorContact}</p>
+                          <p className="text-[10px] text-slate-500 mt-1 leading-relaxed font-sans">Contact the donor directly to verify and coordinate item pick-up or transport.</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
               <div className="p-4 bg-slate-50/50 border-t border-slate-100">
                 {isWinner ? (
-                   <button 
-                     onClick={() => setCheckoutItem(item)}
-                     className="w-full py-4 bg-teal-900 text-white rounded-xl font-bold uppercase tracking-widest text-[11px] shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
-                   >
-                     <Trophy className="w-4 h-4" />
-                     Complete Acquisition
-                   </button>
+                  item.paymentStatus === 'verified' ? (
+                    <div className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold uppercase tracking-widest text-[10px] text-center flex items-center justify-center gap-2 shadow-sm">
+                      <ShieldCheck className="w-4 h-4 text-emerald-100" />
+                      Acquisition & Payment Verified
+                    </div>
+                  ) : item.paymentStatus === 'pending_verification' ? (
+                    <div className="w-full py-4 bg-teal-50 text-teal-800 border border-teal-100 rounded-xl font-medium uppercase tracking-widest text-[10px] text-center flex items-center justify-center gap-2">
+                      <Clock className="w-4 h-4 text-teal-600 animate-pulse" />
+                      Awaiting Treasury Audit
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={() => setCheckoutItem(item)}
+                      className="w-full py-4 bg-teal-900 text-white rounded-xl font-bold uppercase tracking-widest text-[11px] shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2"
+                    >
+                      <Trophy className="w-4 h-4" />
+                      Complete Acquisition
+                    </button>
+                  )
                 ) : (item.status === 'draft' || item.status === 'audit') ? (
                   <div className="flex flex-col gap-2">
                     <div className="w-full py-4 bg-amber-50 text-amber-700 border border-amber-100 rounded-xl font-bold uppercase tracking-widest text-[10px] text-center flex items-center justify-center gap-2 px-4 italic">
@@ -706,6 +786,13 @@ export function AuctionSection() {
                     <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
                       <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Settlement</p>
                       <p className="text-2xl font-black text-slate-900">₱{checkoutItem.currentBid.toLocaleString()}</p>
+                    </div>
+
+                    <div className="p-4 bg-teal-50 rounded-2xl border border-teal-100 text-left">
+                      <p className="text-[9px] font-bold text-teal-800 uppercase tracking-widest mb-1 font-sans">Payment Protocol</p>
+                      <p className="text-xs text-slate-600 leading-relaxed font-sans">
+                        Your bid winnings of <span className="font-bold text-slate-800">₱{checkoutItem.currentBid.toLocaleString()}</span> are received directly by the foundation's charity treasury vault. After your settlement is verified, you can coordinate pick-up or shipping details with the donor.
+                      </p>
                     </div>
 
                     <div 

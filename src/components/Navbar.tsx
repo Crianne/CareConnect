@@ -11,11 +11,14 @@ import {
   Bell, 
   Settings, 
   Lock,
-  ClipboardList
+  ClipboardList,
+  Sparkles
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { cn } from '../lib/utils';
 import { UserRole } from '../types';
+import { collection, query, onSnapshot, orderBy, limit, where } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 interface NavbarProps {
   activeTab: string;
@@ -24,14 +27,92 @@ interface NavbarProps {
 
 export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
   const { profile, login, logout } = useAuth();
+  const [unreadCount, setUnreadCount] = React.useState(0);
+  const [lastRead, setLastRead] = React.useState<string>(() => {
+    return localStorage.getItem('lastReadNotifications') || '1970-01-01T00:00:00.000Z';
+  });
+
+  // Keep refs of activeTab and lastRead to avoid recreating Firestore listeners in a loop
+  const activeTabRef = React.useRef(activeTab);
+  const lastReadRef = React.useRef(lastRead);
+
+  React.useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  React.useEffect(() => {
+    lastReadRef.current = lastRead;
+  }, [lastRead]);
+
+  // Keep lastRead synchronized when activeTab is notifications
+  React.useEffect(() => {
+    if (activeTab === 'notifications') {
+      const nowStr = new Date().toISOString();
+      localStorage.setItem('lastReadNotifications', nowStr);
+      setLastRead(nowStr);
+      setUnreadCount(0);
+    }
+  }, [activeTab]);
+
+  // Real-time listener in the Navbar to detect new notifications/updates
+  React.useEffect(() => {
+    if (!profile) return;
+
+    const donationsRef = collection(db, 'donations');
+    const baseQuery = profile.role === UserRole.ADMIN 
+      ? query(donationsRef, orderBy('timestamp', 'desc'), limit(10))
+      : query(donationsRef, where('donorId', '==', profile.userId));
+
+    const unsub = onSnapshot(baseQuery, (snapshot) => {
+      let docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }) as any);
+      
+      if (profile.role !== UserRole.ADMIN) {
+        // Sort client-side to prevent missing index error
+        docs.sort((a: any, b: any) => {
+          const getT = (ts: any) => {
+            if (!ts) return 0;
+            if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+            if (ts.seconds) return ts.seconds * 1000;
+            return new Date(ts).getTime();
+          };
+          return getT(b.timestamp) - getT(a.timestamp);
+        });
+        docs = docs.slice(0, 10);
+      }
+      const currentActiveTab = activeTabRef.current;
+      const currentLastRead = lastReadRef.current;
+      
+      if (currentActiveTab === 'notifications') {
+        setUnreadCount(0);
+        const newestDoc = docs[0];
+        if (newestDoc && newestDoc.timestamp) {
+          // If Firestore timestamp object, convert it
+          const tStr = newestDoc.timestamp.toDate ? newestDoc.timestamp.toDate().toISOString() : newestDoc.timestamp;
+          localStorage.setItem('lastReadNotifications', tStr);
+          setLastRead(tStr);
+        }
+      } else {
+        const lastReadTime = new Date(currentLastRead).getTime();
+        const count = docs.filter((d: any) => {
+          const t = d.timestamp;
+          if (!t) return false;
+          const itemTime = t.toDate ? t.toDate().getTime() : new Date(t).getTime();
+          return itemTime > lastReadTime;
+        }).length;
+        setUnreadCount(count);
+      }
+    }, (err) => {
+      console.error("Navbar notifications listener error:", err);
+    });
+
+    return () => unsub();
+  }, [profile]);
 
   const getNavItems = () => {
     if (profile?.role === UserRole.ADMIN) {
       return [
         { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
         { id: 'admin', label: 'Admin Hub', icon: ClipboardList },
-        { id: 'patients', label: 'Cases', icon: Heart },
-        { id: 'auctions', label: 'Auctions', icon: Gavel },
         { id: 'notifications', label: 'Alerts', icon: Bell },
         { id: 'settings', label: 'Config', icon: Settings },
       ];
@@ -40,7 +121,7 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
       { id: 'dashboard', label: 'Impact', icon: LayoutDashboard },
       { id: 'patients', label: 'Warriors', icon: Heart },
       { id: 'auctions', label: 'Auctions', icon: Gavel },
-      { id: 'transparency', label: 'Ledger', icon: ShieldCheck },
+      { id: 'transparency', label: 'Transactions', icon: ShieldCheck },
       { id: 'notifications', label: 'Updates', icon: Bell },
       { id: 'profile', label: 'My Profile', icon: UserCircle },
     ];
@@ -69,20 +150,38 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
           {navItems.map((item) => (
             <button
               key={item.id}
+              id={`nav-item-${item.id}`}
               onClick={() => setActiveTab(item.id)}
               className={cn(
-                "h-full px-1 text-sm font-semibold transition-all border-b-2 flex items-center gap-2",
+                "h-full px-1 text-sm font-semibold transition-all border-b-2 flex items-center gap-2 relative",
                 activeTab === item.id 
                   ? "text-brand-primary border-brand-primary" 
                   : "text-slate-500 border-transparent hover:text-slate-800"
               )}
             >
               {item.label}
+              {item.id === 'notifications' && unreadCount > 0 && (
+                <span className="inline-flex items-center justify-center px-1.5 py-0.5 text-[9px] font-black leading-none text-white bg-brand-primary rounded-full shadow-sm animate-pulse">
+                  {unreadCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
 
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent('trigger-onboarding-tour'));
+            }}
+            id="nav-tour-guide-btn"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-pink-50 hover:bg-pink-100 text-pink-700 hover:text-pink-800 rounded-full text-[10px] font-black uppercase tracking-wider transition-all duration-200 cursor-pointer border border-pink-200/40"
+            title="Start Interactive Platform Tour"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-pink-500 animate-pulse" />
+            <span>Guide Tour</span>
+          </button>
+
           <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-[10px] font-bold text-slate-600 uppercase tracking-wider">
             <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
             Polygon Mainnet
@@ -119,18 +218,27 @@ export function Navbar({ activeTab, setActiveTab }: NavbarProps) {
         </div>
       </div>
 
-      {/* Mobile Bottom Navigation - Scrollable */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex items-center h-16 px-4 z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.03)] overflow-x-auto no-scrollbar">
+      {/* Mobile Bottom Navigation - Centered & Optimized */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 flex items-center justify-around h-16 px-2 z-50 shadow-[0_-4px_10px_rgba(0,0,0,0.03)] overflow-x-auto no-scrollbar">
         {navItems.map((item) => (
           <button
             key={item.id}
+            id={`mob-nav-item-${item.id}`}
             onClick={() => setActiveTab(item.id)}
             className={cn(
-              "flex flex-col items-center justify-center gap-1 min-w-[72px] h-full transition-all flex-shrink-0 px-2",
+              "flex flex-col items-center justify-center gap-1 flex-1 min-w-0 max-w-[96px] h-full transition-all px-1 relative",
               activeTab === item.id ? "text-brand-primary" : "text-slate-400"
             )}
           >
-            <item.icon className={cn("w-5 h-5", activeTab === item.id && "fill-current/10")} />
+            <div className="relative">
+              <item.icon className={cn("w-5 h-5", activeTab === item.id && "fill-current/10")} />
+              {item.id === 'notifications' && unreadCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-primary opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-brand-primary"></span>
+                </span>
+              )}
+            </div>
             <span className="text-[9px] font-bold uppercase tracking-tight whitespace-nowrap">{item.label}</span>
           </button>
         ))}

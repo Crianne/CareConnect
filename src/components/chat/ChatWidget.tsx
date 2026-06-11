@@ -6,6 +6,7 @@ import { chatWithAssistant } from '../../services/geminiService';
 import { collection, query, limit, getDocs, where } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { cn } from '../../lib/utils';
 
 export function ChatWidget() {
@@ -123,8 +124,8 @@ export function ChatWidget() {
       }
     } else if (messages.length < 5) {
       try {
-        const patientsSnap = await getDocs(query(collection(db, 'patients'), where('status', '==', 'active'), limit(3)));
-        const auctionsSnap = await getDocs(query(collection(db, 'auctions'), where('status', '==', 'active'), limit(2)));
+        const patientsSnap = await getDocs(query(collection(db, 'patients'), where('status', 'in', ['Active', 'active']), limit(3)));
+        const auctionsSnap = await getDocs(query(collection(db, 'auctions'), where('status', 'in', ['Active', 'active']), limit(2)));
         
         const patients = patientsSnap.docs.map(doc => ({ id: doc.data().publicIdentifier, diag: doc.data().diagnosis }));
         const auctions = auctionsSnap.docs.map(doc => doc.data().title);
@@ -191,8 +192,12 @@ export function ChatWidget() {
                       ? "bg-brand-primary text-white rounded-tr-none" 
                       : "bg-white text-slate-800 border border-slate-100 rounded-tl-none"
                   )}>
-                    <div className="markdown-body prose prose-sm max-w-none">
-                      <ReactMarkdown>
+                    <div className={cn(
+                      msg.role === 'user'
+                        ? "text-white font-medium [&_*]:text-white [&_p]:text-white [&_p]:mb-2 [&_p:last-child]:mb-0 leading-relaxed"
+                        : "markdown-body prose prose-sm max-w-none"
+                    )}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {msg.content}
                       </ReactMarkdown>
                     </div>

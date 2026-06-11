@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, onSnapshot, addDoc, updateDoc, doc, increment, getDocs, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
+import { collection, query, onSnapshot, addDoc, updateDoc, doc, increment, getDocs, setDoc, deleteDoc, getDoc, where } from 'firebase/firestore';
 import { db, handleFirestoreError, handleFirestoreListenerError, OperationType, auth } from '../lib/firebase';
 import { Patient, PatientPriority, PatientStatus, UserProfile, Donation, LoyaltyTier, AuctionItem, AuditLog, AppConfiguration, SurvivorStory } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
@@ -32,8 +32,20 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import copy from 'copy-to-clipboard';
+import { DwellTooltip } from './DwellTooltip';
 import { generateAidAnalysis, chatWithAssistant } from '../services/geminiService';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { TitleExplainer } from './TitleExplainer';
+
+export const PHILIPPINE_REGION_OPTIONS = [
+  { id: 'ncr', name: 'Metro Manila (NCR)', hubs: ['Philippine Children\'s Medical Center', 'PGH Pediatric Oncology Division'] },
+  { id: 'r3', name: 'Central Luzon (Region III)', hubs: ['Jose B. Lingad Memorial Hospital (Oncology Ward)'] },
+  { id: 'r4a', name: 'CALABARZON (Region IV-A)', hubs: ['Batangas Medical Center Clinical Care Unit'] },
+  { id: 'r6', name: 'Western Visayas (Region VI)', hubs: ['Western Visayas Medical Center Pediatric Ward'] },
+  { id: 'r7', name: 'Central Visayas (Region VII)', hubs: ['Vicente Sotto Memorial Medical Center'] },
+  { id: 'r11', name: 'Davao Region (Region XI)', hubs: ['Southern Philippines Medical Center Oncology Center'] }
+];
 
 export function AdminHub() {
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -93,6 +105,8 @@ export function AdminHub() {
     goal: '', 
     diagnosis: '',
     treatmentPlan: '',
+    regionId: 'ncr',
+    hospital: 'Philippine Children\'s Medical Center',
     medicalDocuments: [] as { id: string; name: string; url: string; uploadedAt: string }[]
   });
   const [isAdding, setIsAdding] = useState(false);
@@ -111,6 +125,7 @@ export function AdminHub() {
   const [selectedReport, setSelectedReport] = useState<{ id: string, date: string, type: string, hash: string, size: string } | null>(null);
   const [rejectingDonation, setRejectingDonation] = useState<Donation | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
+  const [isReconcilingPool, setIsReconcilingPool] = useState(false);
 
   const handleCopy = (text: string, id: string) => {
     copy(text);
@@ -177,7 +192,7 @@ ${border}
     return hash;
   };
 
-  const [reports, setReports] = useState<{id: string, date: string, type: string, hash: string, size: string}[]>([
+  const [reports, setReports] = useState<{id: string, date: string, type: string, hash: string, size: string, createdAt?: string}[]>([
     { id: '1', date: '2026-05-13', type: 'Monthly Impact', hash: 'QmXoypizjW3WknFixtdKLX6yL5Lto92DYn33K89HnK6z1a', size: '2.4MB' },
     { id: '2', date: '2026-04-30', type: 'Quarterly Audit', hash: 'QmYwAPJCR53pxee2vCvwqK6Sj2954ZixU29bCvw62Xzo32', size: '12.8MB' }
   ]);
@@ -207,6 +222,24 @@ ${border}
       setStories(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as SurvivorStory)));
     }, (err) => handleFirestoreListenerError(err, OperationType.LIST, 'stories'));
 
+    const unsubR = onSnapshot(collection(db, 'reports'), (snapshot) => {
+      const dbReports = snapshot.docs.map(d => d.data() as {id: string, date: string, type: string, hash: string, size: string, createdAt?: string});
+      dbReports.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : (a.date ? new Date(a.date).getTime() : 0);
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : (b.date ? new Date(b.date).getTime() : 0);
+        return timeB - timeA;
+      });
+      
+      if (dbReports.length === 0) {
+        setReports([
+          { id: '1', date: '2026-05-13', type: 'Monthly Impact', hash: 'QmXoypizjW3WknFixtdKLX6yL5Lto92DYn33K89HnK6z1a', size: '2.4MB' },
+          { id: '2', date: '2026-04-30', type: 'Quarterly Audit', hash: 'QmYwAPJCR53pxee2vCvwqK6Sj2954ZixU29bCvw62Xzo32', size: '12.8MB' }
+        ]);
+      } else {
+        setReports(dbReports);
+      }
+    }, (err) => handleFirestoreListenerError(err, OperationType.LIST, 'reports'));
+
     const unsubC = onSnapshot(doc(db, 'settings', 'foundation'), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
@@ -217,7 +250,7 @@ ${border}
         } as AppConfiguration);
       }
     }, (err) => handleFirestoreListenerError(err, OperationType.GET, 'settings/foundation'));
-    return () => { unsubP(); unsubU(); unsubD(); unsubA(); unsubL(); unsubS(); unsubC(); };
+    return () => { unsubP(); unsubU(); unsubD(); unsubA(); unsubL(); unsubS(); unsubR(); unsubC(); };
   }, []);
 
   const handleUpdateConfig = async (updates: Partial<AppConfiguration>) => {
@@ -373,6 +406,7 @@ ${border}
         currentBid: Number(editingAuction.currentBid),
         status: editingAuction.status,
         endTime: editingAuction.endTime,
+        donorContact: editingAuction.donorContact || '',
         lastUpdated: new Date().toISOString()
       });
       setEditingAuction(null);
@@ -404,25 +438,94 @@ ${border}
     }
   };
 
+  const handleReconcileHistoricPool = async () => {
+    try {
+      setIsReconcilingPool(true);
+      const unreconciled = donations.filter(d => 
+        d.status === 'verified' && 
+        d.patientId === 'general-pool' && 
+        !d.isCarePoolDivided
+      );
+
+      if (unreconciled.length === 0) return;
+
+      const patientsSnap = await getDocs(collection(db, 'patients'));
+      const activePatients = patientsSnap.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Patient))
+        .filter(p => p.status?.toLowerCase() === 'active');
+
+      if (activePatients.length > 0) {
+        for (const docItem of unreconciled) {
+          const splitAmount = Math.round((docItem.amount / activePatients.length) * 100) / 100;
+          const promises = activePatients.map(p => 
+            updateDoc(doc(db, 'patients', p.id), {
+              fundingRaised: increment(splitAmount),
+              lastUpdated: new Date().toISOString()
+            })
+          );
+          await Promise.all(promises);
+
+          // Mark as processed
+          await updateDoc(doc(db, 'donations', docItem.id), {
+            isCarePoolDivided: true
+          });
+
+          await logAction('RECONCILE_POOL', `donations/${docItem.id}`, `Reconciled & split ${docItem.amount} PHP contribution across active warriors`);
+        }
+      }
+    } catch (err) {
+      console.error("Historical care pool division error:", err);
+      handleFirestoreError(err, OperationType.WRITE, 'donations');
+    } finally {
+      setIsReconcilingPool(false);
+    }
+  };
+
   const handleApproveDonation = async (donation: Donation & { type?: string; auctionId?: string }) => {
     try {
       const txHash = '0x' + Array.from({length: 64}, () => Math.floor(Math.random() * 16).toString(16)).join('');
       
       // 1. Update Donation
-      await updateDoc(doc(db, 'donations', donation.id), {
+      const updates: any = {
         status: 'verified',
         verifiedAt: new Date().toISOString(),
         blockchainTxHash: txHash
-      });
+      };
+      if (donation.patientId === 'general-pool') {
+        updates.isCarePoolDivided = true;
+      }
+      await updateDoc(doc(db, 'donations', donation.id), updates);
 
       await logAction('APPROVE_DONATION', `donations/${donation.id}`, `Approved ${donation.amount} PHP contribution`);
 
       // 2. Update Patient (If regular donation)
       if (donation.patientId) {
-        await updateDoc(doc(db, 'patients', donation.patientId), {
-          fundingRaised: increment(donation.amount),
-          lastUpdated: new Date().toISOString()
-        });
+        if (donation.patientId === 'general-pool') {
+          try {
+            const patientsSnap = await getDocs(collection(db, 'patients'));
+            const activePatients = patientsSnap.docs
+              .map(doc => ({ id: doc.id, ...doc.data() } as Patient))
+              .filter(p => p.status?.toLowerCase() === 'active');
+            
+            if (activePatients.length > 0) {
+              const splitAmount = Math.round((donation.amount / activePatients.length) * 100) / 100;
+              const promises = activePatients.map(p => 
+                updateDoc(doc(db, 'patients', p.id), {
+                  fundingRaised: increment(splitAmount),
+                  lastUpdated: new Date().toISOString()
+                })
+              );
+              await Promise.all(promises);
+            }
+          } catch (err) {
+            console.error("Error auto-allocating general care pool donation:", err);
+          }
+        } else {
+          await updateDoc(doc(db, 'patients', donation.patientId), {
+            fundingRaised: increment(donation.amount),
+            lastUpdated: new Date().toISOString()
+          });
+        }
       }
 
       // 3. Update Auction (If auction payment)
@@ -523,6 +626,8 @@ ${border}
       status: PatientStatus.ACTIVE,
       isPublic: true,
       medicalDocuments: newPatient.medicalDocuments,
+      regionId: newPatient.regionId || 'ncr',
+      hospital: newPatient.hospital || 'Philippine Children\'s Medical Center',
       createdAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString()
     };
@@ -530,7 +635,7 @@ ${border}
     await setDoc(doc(db, 'patients', id), p);
     await logAction('REGISTER_WARRIOR', `patients/${id}`, `Registered new warrior: ${p.fullName} (#${p.publicIdentifier})`);
     setIsAdding(false);
-    setNewPatient({ fullName: '', age: '', goal: '', diagnosis: '', treatmentPlan: '', medicalDocuments: [] });
+    setNewPatient({ fullName: '', age: '', goal: '', diagnosis: '', treatmentPlan: '', regionId: 'ncr', hospital: 'Philippine Children\'s Medical Center', medicalDocuments: [] });
   };
 
   const handleCreateStory = async (e: React.FormEvent) => {
@@ -591,6 +696,8 @@ ${border}
         priority: editingPatient.priority,
         status: editingPatient.status,
         isPublic: editingPatient.isPublic,
+        regionId: editingPatient.regionId || 'ncr',
+        hospital: editingPatient.hospital || 'Philippine Children\'s Medical Center',
         lastUpdated: new Date().toISOString()
       });
       setEditingPatient(null);
@@ -671,54 +778,93 @@ ${border}
 
   return (
     <div className="space-y-8 pb-20">
-      <div className="flex flex-col md:flex-row items-center justify-between bg-white px-6 py-4 rounded-xl border border-slate-200 shadow-sm gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            Operational Control Hub
-            <span className="px-2 py-0.5 bg-teal-50 text-teal-700 text-[10px] font-bold uppercase tracking-wider rounded border border-teal-100">Live</span>
-          </h1>
+      <div className="flex flex-col xl:flex-row items-start xl:items-center justify-between bg-white px-4 py-4 md:px-6 md:py-4 rounded-xl border border-slate-200 shadow-sm gap-4">
+        <div className="w-full xl:w-auto">
+          <TitleExplainer
+            featureName="Operational Control Hub"
+            simpleExplanation="The Operational Control Hub is the central panel for admins to oversee, verify, and moderate operations. From here, you manage patient profiles, audit donation proofs, list charity auction lots, and run AI reports."
+            badge="Admin Supervisor"
+            className="border-b-0 text-slate-800"
+            bulletPoints={[
+              "Manage pediatric clinical priority queues securely",
+              "Audit submitted bank and GCash verification requests",
+              "Supervise charity auction art assets",
+              "Generate comprehensive cryptographic PDF transparency reports"
+            ]}
+          >
+            <h1 className="text-lg md:text-xl font-bold tracking-tight flex flex-wrap items-center gap-2">
+              Operational Control Hub
+            </h1>
+          </TitleExplainer>
+          <span className="px-2 py-0.5 bg-teal-50 text-teal-700 text-[10px] font-bold uppercase tracking-wider rounded border border-teal-100 mb-1 lg:mb-0 ml-1">Live</span>
+          {['cases', 'auctions', 'reports'].includes(activeTab) && (
+            <button
+              id="operational-hub-preview-btn"
+              onClick={() => {
+                const detailMap = {
+                  cases: 'patients',
+                  auctions: 'auctions',
+                  reports: 'transparency'
+                };
+                const eventDetail = detailMap[activeTab as 'cases' | 'auctions' | 'reports'];
+                window.dispatchEvent(new CustomEvent('nav-change', { detail: eventDetail }));
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-900 text-teal-300 hover:bg-black text-[9px] font-black uppercase tracking-wider rounded-lg border border-teal-800 transition-all duration-200 shadow-sm cursor-pointer ml-1"
+              title={`Preview ${activeTab === 'cases' ? 'Cases' : activeTab === 'auctions' ? 'Auctions' : 'Audit Ledger'} section`}
+            >
+              <Eye className="w-3.5 h-3.5 text-teal-400 fill-teal-400/10" />
+              Preview Section
+            </button>
+          )}
           <p className="text-xs text-slate-500 font-medium tracking-tight">Foundation Intelligence & Resource Management System</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center justify-start xl:justify-end gap-1.5 md:gap-2 w-full xl:w-auto">
           <button 
+            id="admin-subtab-cases"
             onClick={() => setActiveTab('cases')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'cases' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'cases' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Case Queue
           </button>
           <button 
+            id="admin-subtab-donors"
             onClick={() => setActiveTab('donors')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'donors' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'donors' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Donor Insights
           </button>
           <button 
+            id="admin-subtab-verification"
             onClick={() => setActiveTab('verification')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'verification' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'verification' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Donation Verification
           </button>
           <button 
+            id="admin-subtab-auctions"
             onClick={() => setActiveTab('auctions')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'auctions' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'auctions' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Auctions
           </button>
           <button 
+            id="admin-subtab-reports"
             onClick={() => setActiveTab('reports')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'reports' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'reports' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-55 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Ledger Reports
           </button>
           <button 
+            id="admin-subtab-stories"
             onClick={() => setActiveTab('stories')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'stories' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'stories' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-55 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Survivor Stories
           </button>
           <button 
+            id="admin-subtab-control"
             onClick={() => setActiveTab('control')} 
-            className={cn("px-4 py-2 rounded-lg text-xs font-bold transition-all uppercase tracking-widest", activeTab === 'control' ? "bg-brand-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+            className={cn("px-2.5 py-1.5 md:px-4 md:py-2 rounded-lg text-[10px] md:text-xs font-bold transition-all uppercase tracking-wider md:tracking-widest flex-1 sm:flex-initial text-center whitespace-nowrap", activeTab === 'control' ? "bg-brand-primary text-white shadow-sm" : "bg-slate-55 text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/40")}
           >
             Control Center
           </button>
@@ -738,10 +884,22 @@ ${border}
               >
                 {/* ... existing cases table ... */}
                 <div className="p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-                    <ShieldAlert className="w-4 h-4 text-brand-primary" />
-                    Priority Verification Queue
-                  </h3>
+                  <TitleExplainer
+                    featureName="Priority Verification Queue"
+                    simpleExplanation="The Priority Verification Queue lists all de-identified children profiles and their funding goals. Admins prioritize these cases by urgency (Critical, High, General) to dispatch funds precisely."
+                    badge="Clinical Guard"
+                    className="border-b-0 text-slate-800"
+                    bulletPoints={[
+                      "Critical cases involve active life-saving chemotherapy needs",
+                      "Each medical case gets a unique safe identification hash",
+                      "Admins can edit funding targets and de-identified medical logs first-hand"
+                    ]}
+                  >
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-brand-primary" />
+                      Priority Verification Queue
+                    </h3>
+                  </TitleExplainer>
                   <button 
                     onClick={() => setIsAdding(!isAdding)}
                     className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-white rounded text-[10px] font-bold uppercase tracking-widest hover:bg-slate-900 transition-all"
@@ -793,8 +951,43 @@ ${border}
                           placeholder="e.g., Acute Lymphoblastic Leukemia"
                         />
                       </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Geographic Region</label>
+                        <select 
+                          className="w-full bg-white px-4 py-2 rounded border border-slate-200 focus:ring-1 ring-brand-primary outline-none text-sm font-medium text-slate-800"
+                          value={newPatient.regionId}
+                          onChange={e => {
+                            const newRegionId = e.target.value;
+                            const regionOpt = PHILIPPINE_REGION_OPTIONS.find(r => r.id === newRegionId);
+                            const defaultHub = regionOpt ? regionOpt.hubs[0] : '';
+                            setNewPatient({
+                              ...newPatient, 
+                              regionId: newRegionId,
+                              hospital: defaultHub
+                            });
+                          }}
+                          required
+                        >
+                          {PHILIPPINE_REGION_OPTIONS.map(opt => (
+                            <option key={opt.id} value={opt.id}>{opt.name}</option>
+                          ))}
+                        </select>
+                      </div>
                       <div className="space-y-1.5 md:col-span-2">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Transparent Treatment Plan</label>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Treatment Center Hub</label>
+                        <select 
+                          className="w-full bg-white px-4 py-2 rounded border border-slate-200 focus:ring-1 ring-brand-primary outline-none text-sm font-medium text-slate-800"
+                          value={newPatient.hospital}
+                          onChange={e => setNewPatient({...newPatient, hospital: e.target.value})}
+                          required
+                        >
+                          {(PHILIPPINE_REGION_OPTIONS.find(r => r.id === newPatient.regionId)?.hubs || []).map(hub => (
+                            <option key={hub} value={hub}>{hub}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1.5 md:col-span-2">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Patient Overview</label>
                         <textarea
                           className="w-full bg-white px-4 py-2 rounded border border-slate-200 focus:ring-1 ring-brand-primary outline-none text-sm font-medium h-20"
                           value={newPatient.treatmentPlan}
@@ -857,12 +1050,18 @@ ${border}
                       {patients.map(p => (
                         <tr key={p.id} className="hover:bg-slate-50/50 group">
                           <td className="px-6 py-4">
-                             <span className={cn(
-                               "px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded border",
-                               p.status === 'Active' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-slate-50 text-slate-400 border-slate-100"
-                             )}>
-                               {p.status}
-                             </span>
+                            <DwellTooltip
+                              title={p.status === 'Active' ? "Active Case Protocol" : "Case Complete"}
+                              description={p.status === 'Active' ? "This pediatric patient is actively registered and on-chain verified to receive milestone disbursement pool structures." : "The medical milestones for this patient have been successfully matched, funded, and disbursed."}
+                              statusType={p.status === 'Active' ? "verified" : "neutral"}
+                            >
+                              <span className={cn(
+                                "px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded border cursor-help",
+                                p.status === 'Active' ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-slate-50 text-slate-400 border-slate-100"
+                              )}>
+                                {p.status}
+                              </span>
+                            </DwellTooltip>
                           </td>
                           <td className="px-6 py-4">
                             <p className="text-sm font-bold text-slate-700">#PX-{p.publicIdentifier}</p>
@@ -902,7 +1101,7 @@ ${border}
                                    setAiAuditResult({ patient: p, insight });
                                    setIsAuditing(null);
                                  }}
-                                 className="hidden md:inline-flex items-center gap-1 px-2 py-1 bg-teal-50 text-teal-700 rounded text-[9px] font-bold uppercase tracking-widest hover:bg-teal-100 transition-colors border border-teal-100"
+                                 className="inline-flex items-center gap-1 px-2 py-1 bg-teal-50 text-teal-700 rounded text-[9px] font-bold uppercase tracking-widest hover:bg-teal-100 transition-colors border border-teal-100"
                                >
                                   <Sparkles className="w-3 h-3" />
                                   {isAuditing === p.id ? '...' : 'AI'}
@@ -940,32 +1139,58 @@ ${border}
                 initial={{ opacity: 0, x: -10 }} 
                 animate={{ opacity: 1, x: 0 }} 
                 exit={{ opacity: 0, x: 10 }}
-                className="grid grid-cols-1 md:grid-cols-2 gap-4"
+                className="glass-card overflow-hidden"
               >
-                {donors.map(d => (
-                   // ... existing donors list ...
-                  <div key={d.userId} className="glass-card p-4 flex items-center justify-between group hover:border-brand-primary/30 transition-all">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center font-bold text-slate-300">
-                        {d.displayName?.split(' ').map(n => n[0]).join('') || 'U'}
-                      </div>
-                      <div>
-                        <h4 className="text-sm font-bold text-slate-800 tracking-tight">{d.displayName}</h4>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          {d.role === 'admin' ? (
-                            <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest bg-red-50 px-1.5 py-0.5 rounded border border-red-100">Foundation Admin</span>
-                          ) : (
-                            <span className="text-[9px] font-bold text-teal-600 uppercase tracking-widest bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100">{d.loyaltyTier} Champion</span>
-                          )}
-                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">₱{(d.totalContribution || 0).toLocaleString()}</span>
+                <div className="p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                  <TitleExplainer
+                    featureName="Donor Insights"
+                    simpleExplanation="Donor Insights displays the on-chain levels, contribution counts and verified donation summaries within our support system to empower strategic connection."
+                    badge="Auditor Perspective"
+                    bulletPoints={[
+                      "Aggregates cumulative PHP donations instantly per profile",
+                      "Highlights verified loyalty tier status (Bronze to Platinum)",
+                      "Enables direct lookup of supporting champion badges and streaks"
+                    ]}
+                  >
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                      <TrendingUp className="w-4 h-4 text-brand-primary" />
+                      Donor Insights Ledger
+                    </h3>
+                  </TitleExplainer>
+                </div>
+                <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {donors.map(d => (
+                    // ... existing donors list ...
+                    <div key={d.userId} className="glass-card p-4 flex items-center justify-between group hover:border-brand-primary/30 transition-all bg-white">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center font-bold text-slate-300">
+                          {d.displayName?.split(' ').map(n => n[0]).join('') || 'U'}
+                        </div>
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-800 tracking-tight">{d.displayName}</h4>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            {d.role === 'admin' ? (
+                              <span className="text-[9px] font-bold text-red-600 uppercase tracking-widest bg-red-50 px-1.5 py-0.5 rounded border border-red-100">Foundation Admin</span>
+                            ) : (
+                              <>
+                                <span className="text-[9px] font-bold text-teal-600 uppercase tracking-widest bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100">{d.loyaltyTier} Champion</span>
+                                {d.badges && d.badges.length > 0 && (
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100 uppercase tracking-widest">
+                                    🏆 {d.badges.length} Badges
+                                  </span>
+                                )}
+                              </>
+                            )}
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">₱{(d.totalContribution || 0).toLocaleString()}</span>
+                          </div>
                         </div>
                       </div>
+                      <button className="text-slate-300 hover:text-brand-primary transition-colors">
+                        <TrendingUp className="w-4 h-4" />
+                      </button>
                     </div>
-                    <button className="text-slate-300 hover:text-brand-primary transition-colors">
-                      <TrendingUp className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </motion.div>
             ) : activeTab === 'auctions' ? (
               <motion.div 
@@ -975,14 +1200,25 @@ ${border}
                 exit={{ opacity: 0, x: 10 }}
                 className="glass-card overflow-hidden"
               >
-                <div className="p-5 bg-slate-50 border-b border-slate-100 mb-2">
-                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-                    <Gavel className="w-4 h-4 text-brand-primary" />
-                    Boutique Asset Registry
-                  </h3>
+                <div id="auctions-queue-header" className="p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                  <TitleExplainer
+                    featureName="Boutique Asset Registry"
+                    simpleExplanation="The Boutique Asset Registry lists all rare artworks, autographed memorabilia, or collectible items donated for charity actions. Admins list items, manage reserve bids, and finalize sales here."
+                    badge="Charity Inventory"
+                    bulletPoints={[
+                      "Register unique artwork objects or physical memorabilias",
+                      "Monitor legal title transfer parameters and reserve bids",
+                      "Initiate cryptographic deed bindings"
+                    ]}
+                  >
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                      <Gavel className="w-4 h-4 text-brand-primary" />
+                      Boutique Asset Registry
+                    </h3>
+                  </TitleExplainer>
                   <button 
                     onClick={handleCreateAuction}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-white rounded text-[10px] font-bold uppercase tracking-widest hover:bg-slate-900 transition-all"
+                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-white rounded text-[10px] font-bold uppercase tracking-widest hover:bg-slate-900 transition-all shadow-sm"
                   >
                     <UserPlus className="w-3 h-3" /> Register Asset
                   </button>
@@ -999,15 +1235,33 @@ ${border}
                                   <h4 className="text-sm font-bold text-slate-800 truncate">{item.title}</h4>
                                   <p className="text-[10px] text-slate-400 font-medium mb-2 uppercase">Ref: {item.id.slice(0,8)}</p>
                                   <div className="flex items-center gap-2">
-                                     <span className={cn(
-                                        "px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider rounded border",
-                                        item.status === 'active' ? "bg-green-50 text-green-600 border-green-100" : 
-                                        item.status === 'draft' ? "bg-amber-50 text-amber-600 border-amber-100" :
-                                        item.status === 'audit' ? "bg-purple-50 text-purple-600 border-purple-100" :
-                                        "bg-slate-100 text-slate-400 border-slate-200"
-                                     )}>
-                                        {item.status}
-                                     </span>
+                                     <DwellTooltip
+                                       title={
+                                         item.status === 'active' ? "Active Auction" :
+                                         item.status === 'draft' ? "Auction Draft" :
+                                         "Under Audit"
+                                       }
+                                       description={
+                                         item.status === 'active' ? "This pool campaign is currently active, receiving decentralized bids from medical sponsors." :
+                                         item.status === 'draft' ? "This is a local staging campaign draft, awaiting validation by the oncology team before registry initialization." :
+                                         "Undergoing system auditing, milestone destination compliance review, and contract alignment checker algorithms."
+                                       }
+                                       statusType={
+                                         item.status === 'active' ? "verified" :
+                                         item.status === 'draft' ? "pending" :
+                                         "rejected"
+                                       }
+                                     >
+                                        <span className={cn(
+                                           "px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider rounded border cursor-help",
+                                           item.status === 'active' ? "bg-green-50 text-green-600 border-green-100" : 
+                                           item.status === 'draft' ? "bg-amber-50 text-amber-600 border-amber-100" :
+                                           item.status === 'audit' ? "bg-purple-50 text-purple-600 border-purple-100" :
+                                           "bg-slate-100 text-slate-400 border-slate-200"
+                                        )}>
+                                           {item.status}
+                                        </span>
+                                     </DwellTooltip>
                                      <span className="text-[10px] font-bold text-slate-700">₱{item.currentBid.toLocaleString()}</span>
                                      {item.contractDeployed && (
                                        <span className="text-[8px] font-mono text-teal-600 opacity-60 truncate">
@@ -1099,10 +1353,20 @@ ${border}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   {/* System Settings */}
                   <div className="glass-card p-6">
-                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-6">
-                      <SettingsIcon className="w-4 h-4 text-brand-primary" />
-                      Platform Parameters
-                    </h3>
+                    <TitleExplainer
+                      featureName="Platform Parameters"
+                      simpleExplanation="Platform Parameters allow administrators to toggle maintenance mode, manage API limits, or open/close public submission lines."
+                      badge="System Control"
+                      bulletPoints={[
+                        "Maintenance Mode: Restricts public access to UI",
+                        "Public Submissions: Allows anyone to register new clinical cases"
+                      ]}
+                    >
+                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-6">
+                        <SettingsIcon className="w-4 h-4 text-brand-primary" />
+                        Platform Parameters
+                      </h3>
+                    </TitleExplainer>
                     
                     <div className="space-y-6">
                       <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-100">
@@ -1165,9 +1429,22 @@ ${border}
                   {/* Audit Logs */}
                   <div className="glass-card p-6 flex flex-col h-[500px]">
                     <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center justify-between mb-6">
-                      <div className="flex items-center gap-2">
-                        <Lock className="w-4 h-4 text-brand-primary" />
-                        Administrative Audit Trail
+                      <div className="flex">
+                        <TitleExplainer
+                          featureName="Administrative Audit Trail"
+                          simpleExplanation="The Administrative Audit Trail is a permanent automated journal. It logs every high-impact configuration edit, patient priority update, and audit approval step to guarantee zero-trust operator tracking."
+                          badge="Integrity Tracker"
+                          bulletPoints={[
+                            "Stores an immutable historical record of all admin panel activities",
+                            "Links every single medical state change directly to the operator's official email",
+                            "Enables independent verification of manual donation review events"
+                          ]}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Lock className="w-4 h-4 text-brand-primary shrink-0" />
+                            Administrative Audit Trail
+                          </div>
+                        </TitleExplainer>
                       </div>
                       <span className="text-[8px] px-1.5 py-0.5 bg-slate-100 text-slate-400 rounded">Read-Only</span>
                     </h3>
@@ -1278,9 +1555,20 @@ ${border}
                       <FileText className="w-5 h-5" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest select-none">
-                        Donation Reconciliation Ledger
-                      </h3>
+                      <TitleExplainer
+                        featureName="Donation Reconciliation Ledger"
+                        simpleExplanation="The Reconciliation Ledger tracks every single financial action. Admins can audit ledger mismatches, check bank receipts, and generate certified PDF audit spreadsheets."
+                        badge="Financial Ledger"
+                        bulletPoints={[
+                          "Filters payments by dates, status (verified, pending, rejected), and region hubs",
+                          "Compares physical bank deposits against digital state balances",
+                          "Generates signed PDF documents for corporate oversight"
+                        ]}
+                      >
+                        <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest select-none">
+                          Donation Reconciliation Ledger
+                        </h3>
+                      </TitleExplainer>
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wide mt-0.5 select-none">
                         Filter core and on-chain transactions, reconcile accounts, and export PDF spreadsheets.
                       </p>
@@ -1317,12 +1605,18 @@ ${border}
                         date: new Date().toISOString().split('T')[0],
                         type: 'Reconciliation Audit',
                         hash: generateFakeIpfsHash(),
-                        size: reportSize
+                        size: reportSize,
+                        createdAt: new Date().toISOString()
                       };
-                      setReports(prev => [newReport, ...prev]);
+
+                      try {
+                        await setDoc(doc(db, 'reports', uniqueId), newReport);
+                      } catch (err) {
+                        handleFirestoreError(err, OperationType.WRITE, `reports/${uniqueId}`);
+                      }
                       
                       setIsExportingPdf(false);
-                      alert(`Successfully compiled financial report and initiated PDF download.\nReport has been locked to Administrative Vault and synced with local memory.`);
+                      alert(`Successfully compiled financial report and initiated PDF download.\nReport has been locked to Administrative Vault and synced with on-chain resources.`);
                     }}
                     disabled={isExportingPdf}
                     className="flex items-center justify-center gap-2 px-6 py-2.5 bg-brand-primary text-white rounded-xl text-xs font-bold uppercase tracking-widest shadow-lg hover:opacity-90 disabled:opacity-50 transition-all cursor-pointer"
@@ -1472,14 +1766,32 @@ ${border}
                             {d.paymentMethod}
                           </td>
                           <td className="px-6 py-4">
-                            <span className={cn(
-                              "px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded border",
-                              d.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
-                              d.status === 'pending' ? "bg-amber-50 text-amber-600 border-amber-100" :
-                              "bg-red-50 text-red-600 border-red-100"
-                            )}>
-                              {d.status}
-                            </span>
+                            <DwellTooltip
+                              title={
+                                d.status === 'verified' ? "Contribution Approved" :
+                                d.status === 'pending' ? "Audit In Progress" :
+                                "Verification Failed"
+                              }
+                              description={
+                                d.status === 'verified' ? "This contribution is fully audited, verified against receipts, and committed permanently to the Polygon mainnet blockchain registry." :
+                                d.status === 'pending' ? "Awaiting manual administrative receipt review. Admins must verify GCash/card proofs with financial gateways before approval." :
+                                "Flags as failing receipt mismatch, low visual quality, or duplicate payload submission."
+                              }
+                              statusType={
+                                d.status === 'verified' ? "verified" :
+                                d.status === 'pending' ? "pending" :
+                                "rejected"
+                              }
+                            >
+                               <span className={cn(
+                                 "px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded border cursor-help",
+                                 d.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                                 d.status === 'pending' ? "bg-amber-50 text-amber-600 border-amber-100" :
+                                 "bg-red-50 text-red-600 border-red-100"
+                               )}>
+                                 {d.status}
+                               </span>
+                            </DwellTooltip>
                           </td>
                         </tr>
                       ))}
@@ -1572,9 +1884,20 @@ ${border}
                       <Sparkles className="w-5 h-5 text-brand-primary" />
                     </div>
                     <div>
-                      <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">
-                        Survivor Stories Registry
-                      </h3>
+                      <TitleExplainer
+                        featureName="Survivor Stories Registry"
+                        simpleExplanation="The Survivor Stories Registry lists the remission journals of children who successfully fought cancer. Admins edit their milestones and secure their personal accounts."
+                        badge="Empowerment Log"
+                        bulletPoints={[
+                          "Logs detailed timelines of therapeutic remission and hospital discharge dates",
+                          "Coordinates support letters sent directly by global sponsors",
+                          "Saves inspirational digital assets on-chain"
+                        ]}
+                      >
+                        <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest">
+                          Survivor Stories Registry
+                        </h3>
+                      </TitleExplainer>
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wide mt-0.5">
                         Create, moderate, and publish inspiring remission stories with cryptographic hashes.
                       </p>
@@ -1709,12 +2032,56 @@ ${border}
                 exit={{ opacity: 0, x: 10 }}
                 className="glass-card overflow-hidden"
               >
-                <div className="p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    Fiat-to-Chain Verification Bridge
-                  </h3>
+                <div id="verification-queue-header" className="p-5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                  <TitleExplainer
+                    featureName="Fiat-to-Chain Verification Bridge"
+                    simpleExplanation="The Fiat-to-Chain Verification Bridge allows administrators to audit and sync manual cash/GCash receipts onto the Polygon blockchain, converting offline donations to secure digital assets."
+                    badge="Ledger Oracle"
+                    bulletPoints={[
+                      "Audits transaction images using Gemini AI OCR matching",
+                      "Enables step-by-step confirmation of bank statements",
+                      "Triggers smart contracts to mint certified badges"
+                    ]}
+                  >
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 animate-pulse" />
+                      Fiat-to-Chain Verification Bridge
+                    </h3>
+                  </TitleExplainer>
                 </div>
+
+                {/* HISTORICAL CARE POOL REBALANCER */}
+                {(() => {
+                  const unreconciled = donations.filter(d => 
+                    d.status === 'verified' && 
+                    d.patientId === 'general-pool' && 
+                    !d.isCarePoolDivided
+                  );
+                  if (unreconciled.length === 0) return null;
+                  const totalUnreconciledAmount = unreconciled.reduce((sum, u) => sum + u.amount, 0);
+                  return (
+                    <div id="care-pool-rebalancer-header" className="m-5 p-4 bg-teal-50 border border-teal-200/60 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div className="flex gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-teal-600/10 flex items-center justify-center text-teal-800 shrink-0">
+                          <Sparkles className="w-4 h-4 text-teal-600 animate-pulse" />
+                        </div>
+                        <div className="text-left">
+                          <h4 className="text-xs font-bold text-teal-900 uppercase tracking-wide">Historical Care Pool Rebalancer</h4>
+                          <p className="text-[11px] text-teal-700 font-medium mt-0.5 max-w-xl">
+                            We detected <strong className="font-extrabold">{unreconciled.length}</strong> verified general care pool {unreconciled.length === 1 ? 'donation' : 'donations'} (totaling <strong className="font-extrabold">PHP {totalUnreconciledAmount.toLocaleString()}</strong>) whose splits were skipped due to legacy trigger boundaries. Click the button to divide and balance the ledger across active patient records.
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleReconcileHistoricPool}
+                        disabled={isReconcilingPool}
+                        className="shrink-0 w-full sm:w-auto px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white font-extrabold uppercase text-[9px] tracking-widest rounded-lg transition-all shadow-sm flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {isReconcilingPool ? 'Splitting...' : 'Rebalance & Sync Now'}
+                      </button>
+                    </div>
+                  );
+                })()}
 
                 <div className="overflow-x-auto">
                   <table className="w-full text-left">
@@ -1739,6 +2106,8 @@ ${border}
                                   </span>
                                   {(d as any).type === 'auction_payment' ? (
                                     <span className="text-[8px] font-bold text-teal-600 uppercase tracking-tight">Auction Settlement</span>
+                                  ) : d.patientId === 'general-pool' ? (
+                                    <span className="text-[8px] font-bold text-emerald-600 uppercase tracking-tight">General Care Pool</span>
                                   ) : (
                                     <span className="text-[8px] font-bold text-amber-600 uppercase tracking-tight">
                                       Warrior {patients.find(p => p.id === d.patientId)?.publicIdentifier}
@@ -1810,9 +2179,23 @@ ${border}
           <div className="bg-teal-950 rounded-2xl p-6 shadow-xl text-white relative overflow-hidden border border-teal-800/40">
             <div className="relative z-10">
               <div className="flex items-center justify-between mb-4 pb-3 border-b border-white/5">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-teal-400 animate-pulse" />
-                  <h3 className="text-[11px] font-extrabold uppercase tracking-widest text-teal-300">Foundation Oracle Core</h3>
+                <div className="flex">
+                  <TitleExplainer
+                    featureName="Foundation Oracle Core"
+                    simpleExplanation="Foundation Oracle Core is a simple smart helper. It is our central database pipeline that saves verified reports, manages clinical records, and synchronizes our activities with the blockchain safely."
+                    badge="Central Assistant"
+                    className="text-white hover:text-teal-400 border-white/20 hover:border-teal-400"
+                    bulletPoints={[
+                      "Saves approved donation histories securely",
+                      "Examines receipts using automated image reading technology",
+                      "Creates public cryptographic certificate proofs"
+                    ]}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-teal-400 animate-pulse shrink-0" />
+                      <h3 className="text-[11px] font-extrabold uppercase tracking-widest text-teal-300">Foundation Oracle Core</h3>
+                    </div>
+                  </TitleExplainer>
                 </div>
                 <span className="text-[8px] bg-teal-900/80 px-2 py-0.5 border border-teal-700/50 rounded-full font-mono text-teal-300">
                   SYSTEM READY
@@ -1827,8 +2210,8 @@ ${border}
                           {h.role === 'user' ? '► USER PROMPT' : '🤖 ANALYTICS ENGINE'}
                        </span>
                        <div className="prose prose-sm max-w-none text-[11px] leading-relaxed break-words font-sans">
-                          <div className="markdown-body">
-                             <ReactMarkdown>{h.content}</ReactMarkdown>
+                          <div className="markdown-body-dark">
+                             <ReactMarkdown remarkPlugins={[remarkGfm]}>{h.content}</ReactMarkdown>
                           </div>
                        </div>
                     </div>
@@ -2144,11 +2527,21 @@ ${border}
                 </div>
 
                 <div className="space-y-6">
-                  <div className="p-5 bg-slate-900 rounded-2xl text-teal-50 text-xs leading-relaxed font-medium italic relative overflow-hidden border border-teal-900 shadow-inner">
-                    <div className="relative z-10">
-                      {aiAuditResult.insight}
+                  <div className="p-5 bg-slate-900 rounded-2xl text-teal-50 text-xs leading-relaxed font-medium relative border border-teal-900 shadow-inner overflow-hidden">
+                    <div className="relative z-10 max-h-[300px] md:max-h-[350px] overflow-y-auto pr-1 text-left scrollbar-thin scrollbar-thumb-teal-800 scrollbar-track-transparent">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                        p: ({ node, ...props }) => <p className="mb-3 text-slate-200 leading-relaxed text-xs font-sans" {...props} />,
+                        ul: ({ node, ...props }) => <ul className="list-disc ml-5 mb-3 space-y-1 text-slate-200 text-xs font-sans" {...props} />,
+                        li: ({ node, ...props }) => <li className="text-slate-200 text-xs font-sans" {...props} />,
+                        h3: ({ node, ...props }) => <h3 className="text-sm font-bold mb-2 text-teal-400 uppercase tracking-wider mt-4 first:mt-0 font-sans" {...props} />,
+                        h4: ({ node, ...props }) => <h4 className="text-xs font-bold mb-1 text-teal-300 uppercase tracking-wider mt-3 font-sans" {...props} />,
+                        strong: ({ node, ...props }) => <strong className="font-extrabold text-teal-200" {...props} />,
+                        hr: ({ node, ...props }) => <hr className="border-teal-950/40 my-3" {...props} />,
+                      }}>
+                        {aiAuditResult.insight}
+                      </ReactMarkdown>
                     </div>
-                    <div className="absolute top-0 right-0 p-2 opacity-10">
+                    <div className="absolute top-0 right-0 p-2 opacity-5 pointer-events-none">
                       <Sparkles className="w-12 h-12" />
                     </div>
                   </div>
@@ -2159,7 +2552,7 @@ ${border}
                       <p className="text-xs font-bold text-slate-800">{aiAuditResult.patient.priority} Severity</p>
                     </div>
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Funding Velocity</p>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Funding Progress</p>
                       <p className="text-xs font-bold text-brand-primary">Optimal Growth</p>
                     </div>
                   </div>
@@ -2184,9 +2577,9 @@ ${border}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden relative"
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl overflow-hidden relative flex flex-col max-h-[90vh]"
             >
-              <div className="p-8">
+              <div className="p-8 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
                 <div className="flex items-center justify-between mb-8">
                   <div>
                     <h3 className="text-xl font-bold text-slate-800">Edit Warrior Case</h3>
@@ -2298,8 +2691,45 @@ ${border}
                       required
                     />
                   </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Geographic Region</label>
+                      <select 
+                        className="w-full bg-slate-50 px-4 py-3 rounded-xl border border-slate-100 text-sm font-medium outline-none text-slate-800"
+                        value={editingPatient.regionId || 'ncr'}
+                        onChange={e => {
+                          const newRegionId = e.target.value;
+                          const regionOpt = PHILIPPINE_REGION_OPTIONS.find(r => r.id === newRegionId);
+                          const defaultHub = regionOpt ? regionOpt.hubs[0] : '';
+                          setEditingPatient({
+                            ...editingPatient, 
+                            regionId: newRegionId,
+                            hospital: defaultHub
+                          });
+                        }}
+                        required
+                      >
+                        {PHILIPPINE_REGION_OPTIONS.map(opt => (
+                          <option key={opt.id} value={opt.id}>{opt.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Treatment Center</label>
+                      <select 
+                        className="w-full bg-slate-50 px-4 py-3 rounded-xl border border-slate-100 text-sm font-medium outline-none text-slate-800"
+                        value={editingPatient.hospital || ''}
+                        onChange={e => setEditingPatient({...editingPatient, hospital: e.target.value})}
+                        required
+                      >
+                        {(PHILIPPINE_REGION_OPTIONS.find(r => r.id === (editingPatient.regionId || 'ncr'))?.hubs || []).map(hub => (
+                          <option key={hub} value={hub}>{hub}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Transparent Treatment Plan</label>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Patient Overview</label>
                     <textarea 
                       className="w-full bg-slate-50 px-4 py-3 rounded-xl border border-slate-100 text-sm font-medium h-24"
                       value={editingPatient.treatmentPlan || ''}
@@ -2379,6 +2809,16 @@ ${border}
                       value={editingAuction.endTime.slice(0, 16)}
                       onChange={e => setEditingAuction({...editingAuction, endTime: new Date(e.target.value).toISOString()})}
                       required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Donor Contact Number</label>
+                    <input 
+                      type="tel"
+                      className="w-full bg-slate-50 px-4 py-3 rounded-xl border border-slate-100 text-sm font-medium outline-none"
+                      value={editingAuction.donorContact || ''}
+                      onChange={e => setEditingAuction({...editingAuction, donorContact: e.target.value})}
+                      placeholder="e.g. +63 917 123 4567"
                     />
                   </div>
                   <div className="space-y-1.5">

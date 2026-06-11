@@ -1,24 +1,24 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  X, 
-  Wallet, 
-  Upload, 
-  ShieldCheck, 
-  Clock, 
-  CheckCircle2, 
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  X,
+  Wallet,
+  Upload,
+  ShieldCheck,
+  Clock,
+  CheckCircle2,
   AlertCircle,
   Copy,
   Check,
   ChevronRight,
   Info,
-  RefreshCw
-} from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
-import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
-import { collection, addDoc } from 'firebase/firestore';
-import { formatCurrency, cn } from '../../lib/utils';
-import { Patient } from '../../types';
+  RefreshCw,
+} from "lucide-react";
+import { useAuth } from "../../context/AuthContext";
+import { db, handleFirestoreError, OperationType } from "../../lib/firebase";
+import { collection, addDoc, doc, updateDoc } from "firebase/firestore";
+import { formatCurrency, cn } from "../../lib/utils";
+import { Patient } from "../../types";
 
 interface DonationModalProps {
   isOpen: boolean;
@@ -30,24 +30,42 @@ const Loader2 = ({ className }: { className?: string }) => (
   <RefreshCw className={cn("animate-spin", className)} />
 );
 
-export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) {
+export function DonationModal({
+  isOpen,
+  onClose,
+  patient,
+}: DonationModalProps) {
   const { profile } = useAuth();
-  const [step, setStep] = useState<'amount' | 'payment' | 'proof' | 'success'>('amount');
-  const [amount, setAmount] = useState<string>('');
-  const [method, setMethod] = useState<'gcash' | 'card' | 'crypto'>('gcash');
+  const [step, setStep] = useState<"amount" | "payment" | "proof" | "success">(
+    "amount",
+  );
+  const [amount, setAmount] = useState<string>("");
+  const [method, setMethod] = useState<"gcash" | "card" | "crypto">("gcash");
   const [copied, setCopied] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [receiptUrl, setReceiptUrl] = useState<string>('');
+  const [receiptUrl, setReceiptUrl] = useState<string>("");
   const [tempReceipt, setTempReceipt] = useState<string | null>(null);
   const [foundationQr, setFoundationQr] = useState<string | null>(null);
   const [isAnonymous, setIsAnonymous] = useState(false);
+  const [donationFrequency, setDonationFrequency] = useState<
+    "one-time" | "monthly" | "weekly"
+  >("one-time");
+  const [agreedTerms, setAgreedTerms] = useState(false);
+  const [showTermsModal, setShowTermsModal] = useState(false);
 
   React.useEffect(() => {
     if (isOpen) {
+      setStep("amount");
+      setAmount("");
+      setReceiptUrl("");
+      setTempReceipt(null);
+      setIsAnonymous(false);
+      setDonationFrequency("one-time");
+      setAgreedTerms(false);
       const loadFoundationQr = async () => {
         try {
-          const { doc, getDoc } = await import('firebase/firestore');
-          const settingsDoc = await getDoc(doc(db, 'settings', 'foundation'));
+          const { doc, getDoc } = await import("firebase/firestore");
+          const settingsDoc = await getDoc(doc(db, "settings", "foundation"));
           if (settingsDoc.exists()) {
             const data = settingsDoc.data();
             setFoundationQr(data.gcashQrUrl || data.qrCode || null);
@@ -60,7 +78,10 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
     }
   }, [isOpen]);
 
-  if (!isOpen || !patient) return null;
+  if (!isOpen) return null;
+
+  const numericAmount = parseFloat(amount);
+  const isBelowMinimum = amount.trim() !== "" && (isNaN(numericAmount) || numericAmount < 100);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -75,7 +96,7 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
       reader.onloadend = () => {
         const img = new Image();
         img.onload = () => {
-          const canvas = document.createElement('canvas');
+          const canvas = document.createElement("canvas");
           const MAX_WIDTH = 800;
           const MAX_HEIGHT = 800;
           let width = img.width;
@@ -95,11 +116,11 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
 
           canvas.width = width;
           canvas.height = height;
-          const ctx = canvas.getContext('2d');
+          const ctx = canvas.getContext("2d");
           ctx?.drawImage(img, 0, 0, width, height);
-          
+
           // Compress to JPEG with lower quality to stay well under 1MB
-          const compressed = canvas.toDataURL('image/jpeg', 0.6);
+          const compressed = canvas.toDataURL("image/jpeg", 0.6);
           setTempReceipt(compressed);
           setReceiptUrl(compressed);
         };
@@ -118,27 +139,43 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
   const handleSubmitDonation = async () => {
     if (!profile) return;
     const numericAmount = parseFloat(amount);
-    if (!numericAmount || isNaN(numericAmount) || numericAmount <= 0) {
-      alert("Please enter a valid donation amount.");
+    if (!numericAmount || isNaN(numericAmount) || numericAmount < 100) {
+      alert("The minimum donation amount is ₱100. Please enter at least 100 pesos.");
       return;
     }
     setUploading(true);
     try {
-      await addDoc(collection(db, 'donations'), {
+      // 1. Save the donation with isRecurring and frequency fields
+      await addDoc(collection(db, "donations"), {
         donorId: profile.userId,
-        donorName: profile.displayName || 'Anonymous Warrior',
+        donorName: profile.displayName || "Anonymous Warrior",
         isAnonymous: isAnonymous,
-        patientId: patient.id,
+        patientId: patient ? patient.id : "general-pool",
         amount: numericAmount,
-        currency: 'PHP',
+        currency: "PHP",
         paymentMethod: method,
-        receiptUrl: receiptUrl || 'https://images.unsplash.com/photo-1554224155-1696413565d3?auto=format&fit=crop&q=80&w=200', // Mock receipt
-        status: 'pending',
-        timestamp: new Date().toISOString()
+        receiptUrl:
+          receiptUrl ||
+          "https://images.unsplash.com/photo-1554224155-1696413565d3?auto=format&fit=crop&q=80&w=200", // Mock receipt
+        status: "pending",
+        timestamp: new Date().toISOString(),
+        isRecurring: donationFrequency !== "one-time",
+        frequency: donationFrequency,
       });
-      setStep('success');
+
+      // 2. If it is a recurring donation, update the donor profile document in Firestore
+      if (donationFrequency !== "one-time") {
+        const userRef = doc(db, "users", profile.userId);
+        await updateDoc(userRef, {
+          isRecurringDonor: true,
+          recurringFrequency: donationFrequency as "monthly" | "weekly",
+          recurringAmount: numericAmount,
+        });
+      }
+
+      setStep("success");
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'donations');
+      handleFirestoreError(err, OperationType.WRITE, "donations");
     } finally {
       setUploading(false);
     }
@@ -146,74 +183,232 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
 
   const renderStep = () => {
     switch (step) {
-      case 'amount':
+      case "amount":
         return (
           <div className="space-y-8 py-4">
             <div className="space-y-4">
-               {[500, 1000, 5000, 10000].map(val => (
-                 <button 
+              {/* Frequency Tab Selection */}
+              <div
+                className="p-1 bg-slate-100/80 rounded-2xl flex border border-slate-200/40 mb-2"
+                id="donation-frequency-selector"
+              >
+                {[
+                  {
+                    id: "one-time",
+                    title: "One-Time Care",
+                    desc: "Direct medicine support",
+                  },
+                  {
+                    id: "monthly",
+                    title: "Monthly Partner",
+                    desc: "Sustained treatment pathways",
+                  },
+                  {
+                    id: "weekly",
+                    title: "Weekly Guardian",
+                    desc: "High-frequency chemo funds",
+                  },
+                ].map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setDonationFrequency(item.id as any)}
+                    className={cn(
+                      "flex-1 py-3 px-1.5 rounded-xl text-center transition-all flex flex-col items-center justify-center gap-0.5",
+                      donationFrequency === item.id
+                        ? "bg-slate-900 text-white shadow-md shadow-slate-950/10"
+                        : "text-slate-500 hover:text-slate-800",
+                    )}
+                  >
+                    <span className="text-[9px] font-black uppercase tracking-wider leading-none">
+                      {item.title}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-[7px] font-bold leading-none mt-0.5",
+                        donationFrequency === item.id
+                          ? "text-teal-300"
+                          : "text-slate-400 font-medium",
+                      )}
+                    >
+                      {item.desc}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {donationFrequency !== "one-time" && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="p-4 bg-emerald-50/70 rounded-2xl border border-emerald-100 flex items-start gap-3 text-emerald-800 mb-2"
+                  id="recurring-frequency-badge"
+                >
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-sm shadow-emerald-500/10 animate-pulse">
+                    ↻
+                  </div>
+                  <div className="space-y-0.5">
+                    <p className="text-[10px] font-extrabold uppercase tracking-widest leading-none text-emerald-700">
+                      Recurring Pledge Confirmed
+                    </p>
+                    <p className="text-[10px] text-emerald-600 font-semibold leading-relaxed">
+                      You are pledging a{" "}
+                      <strong className="text-emerald-800 uppercase font-black">
+                        {donationFrequency}
+                      </strong>{" "}
+                      commitment. This status links continuous gratitude honors
+                      to your donor profile.
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+
+              {[500, 1000, 5000, 10000].map((val) => (
+                <button
                   key={val}
                   onClick={() => setAmount(val.toString())}
                   className={cn(
                     "w-full py-4 px-6 rounded-xl border-2 flex items-center justify-between transition-all group",
-                    amount === val.toString() ? "border-brand-primary bg-teal-50" : "border-slate-100 hover:border-slate-200"
+                    amount === val.toString()
+                      ? "border-brand-primary bg-teal-50"
+                      : "border-slate-100 hover:border-slate-200",
                   )}
-                 >
-                   <span className={cn("text-lg font-bold", amount === val.toString() ? "text-brand-primary" : "text-slate-700")}>
-                     {formatCurrency(val)}
-                   </span>
-                   <div className={cn(
-                     "w-6 h-6 rounded-full border-2 flex items-center justify-center",
-                     amount === val.toString() ? "border-brand-primary bg-brand-primary text-white" : "border-slate-200"
-                   )}>
-                     {amount === val.toString() && <Check className="w-4 h-4" />}
-                   </div>
-                 </button>
-               ))}
-               <div className="relative">
-                 <input 
-                   type="number"
-                   placeholder="Enter custom amount (PHP)"
-                   className="w-full px-4 py-4 bg-slate-50 border-2 border-slate-100 rounded-xl outline-none focus:border-brand-primary font-bold text-lg"
-                   value={amount}
-                   onChange={e => setAmount(e.target.value)}
-                 />
-                 <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">PHP</span>
-               </div>
-               <div 
-                 onClick={() => setIsAnonymous(!isAnonymous)}
-                 className={cn(
-                   "p-4 rounded-xl border-2 flex items-center justify-between cursor-pointer transition-all select-none mt-4",
-                   isAnonymous ? "border-brand-primary bg-teal-50/40" : "border-slate-100 bg-white hover:border-slate-200"
-                 )}
-               >
-                 <div className="flex items-center gap-3">
-                   <div className={cn(
-                     "p-2 rounded-lg border",
-                     isAnonymous ? "bg-teal-50 text-brand-primary border-teal-200" : "bg-slate-50 text-slate-400 border-slate-100"
-                   )}>
-                     <ShieldCheck className="w-4 h-4" />
-                   </div>
-                   <div>
-                     <p className="text-xs font-bold text-slate-700">Donate Anonymously</p>
-                     <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5 tracking-wider font-semibold">Mask your identity on public boards</p>
-                   </div>
-                 </div>
-                 <div className={cn(
-                   "w-10 h-6 rounded-full p-0.5 transition-colors duration-200 flex items-center cursor-pointer",
-                   isAnonymous ? "bg-brand-primary" : "bg-slate-200"
-                 )}>
-                   <motion.div 
-                     layout
-                     className="w-5 h-5 bg-white rounded-full shadow-sm"
-                     animate={{ x: isAnonymous ? 16 : 0 }}
-                   />
-                 </div>
-               </div>
+                >
+                  <span
+                    className={cn(
+                      "text-lg font-bold",
+                      amount === val.toString()
+                        ? "text-brand-primary"
+                        : "text-slate-700",
+                    )}
+                  >
+                    {formatCurrency(val)}
+                  </span>
+                  <div
+                    className={cn(
+                      "w-6 h-6 rounded-full border-2 flex items-center justify-center",
+                      amount === val.toString()
+                        ? "border-brand-primary bg-brand-primary text-white"
+                        : "border-slate-200",
+                    )}
+                  >
+                    {amount === val.toString() && <Check className="w-4 h-4" />}
+                  </div>
+                </button>
+              ))}
+              <div className="space-y-1.5 text-left">
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="100"
+                    placeholder="Enter custom amount (PHP)"
+                    className={cn(
+                      "w-full px-4 py-4 border-2 rounded-xl outline-none font-bold text-lg transition-all duration-200",
+                      isBelowMinimum
+                        ? "border-red-400 bg-red-50/40 focus:border-red-500 text-red-900 placeholder:text-red-300"
+                        : "bg-slate-50 border-slate-100 focus:border-brand-primary text-slate-900"
+                    )}
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                  <span className={cn(
+                    "absolute right-4 top-1/2 -translate-y-1/2 font-bold transition-colors duration-200",
+                    isBelowMinimum ? "text-red-400" : "text-slate-400"
+                  )}>
+                    PHP
+                  </span>
+                </div>
+                <AnimatePresence mode="wait">
+                  {isBelowMinimum ? (
+                    <motion.div
+                      key="warning"
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      className="flex items-center gap-1.5 pl-1 mt-1"
+                    >
+                      <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                      <span className="text-xs text-red-500 font-bold">
+                        Minimum donation requirement is ₱100 pesos
+                      </span>
+                    </motion.div>
+                  ) : (
+                    <motion.p
+                      key="hint"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="text-[10px] text-slate-400 font-bold uppercase tracking-wider pl-1 mt-1"
+                    >
+                      Minimum donation amount is ₱100
+                    </motion.p>
+                  )}
+                </AnimatePresence>
+              </div>
+              <div
+                onClick={() => setIsAnonymous(!isAnonymous)}
+                className={cn(
+                  "p-4 rounded-xl border-2 flex items-center justify-between cursor-pointer transition-all select-none mt-4",
+                  isAnonymous
+                    ? "border-brand-primary bg-teal-50/40"
+                    : "border-slate-100 bg-white hover:border-slate-200",
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className={cn(
+                      "p-2 rounded-lg border",
+                      isAnonymous
+                        ? "bg-teal-50 text-brand-primary border-teal-200"
+                        : "bg-slate-50 text-slate-400 border-slate-100",
+                    )}
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-700">
+                      Donate Anonymously
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5 tracking-wider font-semibold">
+                      Mask your identity on public boards
+                    </p>
+                  </div>
+                </div>
+                <div
+                  className={cn(
+                    "w-10 h-6 rounded-full p-0.5 transition-colors duration-200 flex items-center cursor-pointer",
+                    isAnonymous ? "bg-brand-primary" : "bg-slate-200",
+                  )}
+                >
+                  <motion.div
+                    layout
+                    className="w-5 h-5 bg-white rounded-full shadow-sm"
+                    animate={{ x: isAnonymous ? 16 : 0 }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 mt-5 text-left bg-slate-50/50 p-3.5 rounded-xl border border-slate-100/60" id="terms-agreement-check-container">
+                <button
+                  type="button"
+                  id="terms-agreement-checkbox"
+                  onClick={() => setAgreedTerms(!agreedTerms)}
+                  className={cn(
+                    "mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-all shrink-0",
+                    agreedTerms 
+                      ? "bg-brand-primary border-brand-primary text-white" 
+                      : "border-slate-300 bg-white hover:border-slate-400"
+                  )}
+                >
+                  {agreedTerms && <Check className="w-3 h-3 stroke-[3]" />}
+                </button>
+                <p className="text-[11px] text-slate-500 font-medium leading-normal select-none">
+                  I agree to the <button type="button" onClick={() => setShowTermsModal(true)} className="text-brand-primary font-bold underline hover:text-teal-600 transition-colors">Terms &amp; Conditions</button> and acknowledge that my donation is final, transparently recorded on-chain, and matched to pediatric chemotherapy rooms.
+                </p>
+              </div>
             </div>
-            <button 
-              disabled={!amount}
-              onClick={() => setStep('payment')}
+            <button
+              disabled={!amount || parseFloat(amount) < 100 || !agreedTerms}
+              onClick={() => setStep("payment")}
               className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-black transition-all disabled:opacity-50 shadow-xl"
             >
               Continue to Payment
@@ -221,128 +416,192 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
             </button>
           </div>
         );
-      case 'payment':
+      case "payment":
         return (
           <div className="space-y-8 py-4">
             <div className="bg-teal-900 rounded-[2rem] p-8 text-center text-white space-y-6 relative overflow-hidden">
-               <div className="relative z-10 space-y-4">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-teal-300">Foundation GCash Portal</p>
-                  <div className="w-48 h-48 bg-white p-4 rounded-3xl mx-auto shadow-2xl flex items-center justify-center border-4 border-teal-500/30 overflow-hidden">
-                    {foundationQr ? (
-                      <img src={foundationQr} className="w-full h-full object-contain" alt="Foundation QR" />
-                    ) : (
-                      <div className="text-teal-900 flex flex-col items-center">
-                         <ShieldCheck className="w-16 h-16 mb-2 opacity-20" />
-                         <span className="text-[10px] font-bold uppercase tracking-widest leading-tight">Verified <br /> Charity Wallet</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-xl font-bold tracking-tight">CareConnect Foundation</p>
-                    <p className="text-sm font-mono text-teal-200">0995-345-6380</p>
-                  </div>
-                  <button 
-                    onClick={() => handleCopy('09953456380')}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 transition-all backdrop-blur"
-                  >
-                    {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    {copied ? 'Copied' : 'Copy Number'}
-                  </button>
-               </div>
+              <div className="relative z-10 space-y-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-teal-300">
+                  Foundation GCash Portal
+                </p>
+                <div className="w-48 h-48 bg-white p-4 rounded-3xl mx-auto shadow-2xl flex items-center justify-center border-4 border-teal-500/30 overflow-hidden">
+                  {foundationQr ? (
+                    <img
+                      src={foundationQr}
+                      className="w-full h-full object-contain"
+                      alt="Foundation QR"
+                    />
+                  ) : (
+                    <div className="text-teal-900 flex flex-col items-center">
+                      <ShieldCheck className="w-16 h-16 mb-2 opacity-20" />
+                      <span className="text-[10px] font-bold uppercase tracking-widest leading-tight">
+                        Verified <br /> Charity Wallet
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xl font-bold tracking-tight">
+                    CareConnect Foundation
+                  </p>
+                  <p className="text-sm font-mono text-teal-200">
+                    0995-345-6380
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleCopy("09953456380")}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 transition-all backdrop-blur"
+                >
+                  {copied ? (
+                    <Check className="w-3 h-3" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  {copied ? "Copied" : "Copy Number"}
+                </button>
+              </div>
             </div>
 
             <div className="flex gap-4 p-4 bg-blue-50/50 rounded-xl border border-blue-100 text-blue-700">
-               <Info className="w-5 h-5 shrink-0" />
-               <p className="text-xs font-medium leading-relaxed">
-                 Pay via GCash app, save your receipt, then proceed to the next step to upload verification proof.
-               </p>
+              <Info className="w-5 h-5 shrink-0" />
+              <p className="text-xs font-medium leading-relaxed">
+                Pay via GCash app, save your receipt, then proceed to the next
+                step to upload verification proof.
+              </p>
             </div>
 
             <div className="flex gap-4">
-               <button onClick={() => setStep('amount')} className="flex-1 py-4 text-slate-500 font-bold uppercase text-xs tracking-widest hover:text-slate-700">Back</button>
-               <button 
-                onClick={() => setStep('proof')}
+              <button
+                onClick={() => setStep("amount")}
+                className="flex-1 py-4 text-slate-500 font-bold uppercase text-xs tracking-widest hover:text-slate-700"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => setStep("proof")}
                 className="flex-3 py-4 bg-brand-primary text-white rounded-xl font-bold uppercase text-xs tracking-widest shadow-lg shadow-brand-primary/20 hover:bg-brand-primary/90 transition-all"
-               >
-                 I have Paid
-               </button>
+              >
+                I have Paid
+              </button>
             </div>
           </div>
         );
-      case 'proof':
+      case "proof":
         return (
           <div className="space-y-8 py-4">
             <div className="space-y-4">
-               <p className="text-sm text-slate-500 font-medium">Verify your payment of <span className="text-slate-900 font-bold">{formatCurrency(parseFloat(amount))}</span> by uploading your GCash transaction confirmation.</p>
-               
-               <label className="border-2 border-dashed border-slate-200 rounded-3xl p-10 flex flex-col items-center justify-center space-y-4 cursor-pointer hover:border-brand-primary/50 transition-all group relative overflow-hidden h-64">
-                  {tempReceipt ? (
-                    <>
-                      <img src={tempReceipt} className="absolute inset-0 w-full h-full object-cover opacity-20" alt="Preview" />
-                      <div className="relative z-10 flex flex-col items-center text-center">
-                        <CheckCircle2 className="w-12 h-12 text-emerald-500 mb-2" />
-                        <p className="text-sm font-bold text-slate-700">Receipt Captured</p>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Tap to replace</p>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-teal-50 group-hover:text-teal-600 transition-colors">
-                         <Upload className="w-8 h-8" />
-                      </div>
-                      <div className="text-center">
-                        <p className="text-sm font-bold text-slate-700">Click to upload receipt</p>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">PNG, JPG or PDF up to 5MB</p>
-                      </div>
-                    </>
-                  )}
-                  <input type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
-               </label>
+              <p className="text-sm text-slate-500 font-medium">
+                Verify your payment of{" "}
+                <span className="text-slate-900 font-bold">
+                  {formatCurrency(parseFloat(amount))}
+                </span>{" "}
+                by uploading your GCash transaction confirmation.
+              </p>
 
-               <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Transaction Reference # (Optional)</label>
-                  <input 
-                    placeholder="Enter 13-digit GCash Ref"
-                    className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-mono tracking-wider focus:ring-2 ring-brand-primary/20 outline-none"
-                  />
-               </div>
+              <label className="border-2 border-dashed border-slate-200 rounded-3xl p-10 flex flex-col items-center justify-center space-y-4 cursor-pointer hover:border-brand-primary/50 transition-all group relative overflow-hidden h-64">
+                {tempReceipt ? (
+                  <>
+                    <img
+                      src={tempReceipt}
+                      className="absolute inset-0 w-full h-full object-cover opacity-20"
+                      alt="Preview"
+                    />
+                    <div className="relative z-10 flex flex-col items-center text-center">
+                      <CheckCircle2 className="w-12 h-12 text-emerald-500 mb-2" />
+                      <p className="text-sm font-bold text-slate-700">
+                        Receipt Captured
+                      </p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                        Tap to replace
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 group-hover:bg-teal-50 group-hover:text-teal-600 transition-colors">
+                      <Upload className="w-8 h-8" />
+                    </div>
+                    <div className="text-center">
+                      <p className="text-sm font-bold text-slate-700">
+                        Click to upload receipt
+                      </p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                        PNG, JPG or PDF up to 5MB
+                      </p>
+                    </div>
+                  </>
+                )}
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                />
+              </label>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  Transaction Reference # (Optional)
+                </label>
+                <input
+                  placeholder="Enter 13-digit GCash Ref"
+                  className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-mono tracking-wider focus:ring-2 ring-brand-primary/20 outline-none"
+                />
+              </div>
             </div>
 
             <div className="flex gap-4 pt-4">
-               <button onClick={() => setStep('payment')} className="flex-1 py-4 text-slate-500 font-bold uppercase text-xs tracking-widest">Back</button>
-               <button 
+              <button
+                onClick={() => setStep("payment")}
+                className="flex-1 py-4 text-slate-500 font-bold uppercase text-xs tracking-widest"
+              >
+                Back
+              </button>
+              <button
                 onClick={handleSubmitDonation}
                 disabled={uploading || !receiptUrl}
                 className="flex-3 py-4 bg-brand-primary text-white rounded-xl font-bold uppercase text-xs tracking-widest flex items-center justify-center gap-2 disabled:opacity-50"
-               >
-                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Confirm & Send for Verification'}
-               </button>
+              >
+                {uploading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  "Confirm & Send for Verification"
+                )}
+              </button>
             </div>
           </div>
         );
-      case 'success':
+      case "success":
         return (
           <div className="py-12 text-center space-y-8">
             <div className="w-24 h-24 bg-teal-50 rounded-full flex items-center justify-center mx-auto text-teal-600 animate-bounce">
-               <CheckCircle2 className="w-12 h-12" />
+              <CheckCircle2 className="w-12 h-12" />
             </div>
             <div className="space-y-3">
-              <h3 className="text-3xl font-bold tracking-tight text-slate-900">Donation Captured!</h3>
+              <h3 className="text-3xl font-bold tracking-tight text-slate-900">
+                Donation Captured!
+              </h3>
               <p className="text-sm text-slate-500 font-medium leading-relaxed max-w-xs mx-auto">
-                Our verification engine is now matching your payment. Once approved, it will be permanently engraved on the Polygon Blockchain.
+                Our verification engine is now matching your payment. Once
+                approved, it will be permanently engraved on the Polygon
+                Blockchain.
               </p>
             </div>
             <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100 flex items-center gap-4 text-left">
-               <ShieldCheck className="w-8 h-8 text-brand-primary shrink-0" />
-               <div>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Status</p>
-                  <div className="flex items-center gap-2">
-                     <span className="text-sm font-bold text-slate-800">Pending Polygon Verification</span>
-                     <div className="w-1.5 h-1.5 bg-brand-primary rounded-full animate-pulse" />
-                  </div>
-               </div>
+              <ShieldCheck className="w-8 h-8 text-brand-primary shrink-0" />
+              <div>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">
+                  Status
+                </p>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-bold text-slate-800">
+                    Pending Polygon Verification
+                  </span>
+                  <div className="w-1.5 h-1.5 bg-brand-primary rounded-full animate-pulse" />
+                </div>
+              </div>
             </div>
-            <button 
+            <button
               onClick={onClose}
               className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold uppercase text-xs tracking-widest"
             >
@@ -354,34 +613,137 @@ export function DonationModal({ isOpen, onClose, patient }: DonationModalProps) 
   };
 
   return (
-    <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95, y: 20 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.95, y: 20 }}
-        className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden"
-      >
-        <div className="bg-slate-50 px-8 py-6 border-b border-slate-100 flex items-center justify-between">
-           <div className="flex items-center gap-3">
+    <>
+      <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          className="bg-white w-full max-w-xl rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        >
+          <div className="bg-slate-50 px-8 py-6 border-b border-slate-100 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-white rounded-xl border border-slate-100 flex items-center justify-center text-brand-primary shadow-sm">
-                 <Wallet className="w-5 h-5" />
+                <Wallet className="w-5 h-5" />
               </div>
               <div>
-                 <h2 className="text-lg font-bold text-slate-800 tracking-tight">Verified Contribution</h2>
-                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mt-0.5">
-                   Secured by <ShieldCheck className="w-3 h-3 text-teal-500" /> Polygon Mainnet
-                 </p>
+                <h2 className="text-lg font-bold text-slate-800 tracking-tight">
+                  {patient
+                    ? `Fund PX-${patient.publicIdentifier}`
+                    : "Unified Care Pool"}
+                </h2>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mt-0.5">
+                  {patient
+                    ? "Direct Targeted Case Care"
+                    : "Divide equally to all active warriors"}
+                </p>
               </div>
-           </div>
-           <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 transition-colors">
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-slate-600 transition-colors"
+            >
               <X className="w-5 h-5" />
-           </button>
-        </div>
+            </button>
+          </div>
 
-        <div className="p-10">
-           {renderStep()}
-        </div>
-      </motion.div>
-    </div>
+          <div className="p-8 md:p-10 overflow-y-auto flex-1">
+            {renderStep()}
+          </div>
+        </motion.div>
+      </div>
+
+      <AnimatePresence>
+        {showTermsModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden border border-slate-100 p-8 flex flex-col max-h-[80vh]"
+            >
+              <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4 shrink-0">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-brand-primary" />
+                  <h3 className="text-base font-bold text-slate-800 uppercase tracking-widest font-sans">
+                    Terms of Contribution
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTermsModal(false)}
+                  className="text-slate-400 hover:text-slate-600 p-1"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="overflow-y-auto pr-2 space-y-4 text-xs text-slate-600 leading-relaxed font-normal flex-1">
+                <div>
+                  <h4 className="font-bold text-slate-800 mb-1">
+                    1. Targeted Case Allocation
+                  </h4>
+                  <p>
+                    All contributions specifically directed to a patient (e.g., Target PX case files) are reserved strictly for that patient's oncology expenses, including medicines, medical procedures, chemotherapy, and supporting pediatric therapies.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-slate-800 mb-1">
+                    2. Unified Care Pool (Auto-Division)
+                  </h4>
+                  <p>
+                    Contributions to the Unified Care Pool are automatically divided equally among all active pediatric oncology cases in our verified registry. This ensures all warriors receive equitable medical care.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-slate-800 mb-1">
+                    3. Immutable Blockchain Records
+                  </h4>
+                  <p>
+                    Once GCash receipt matching is verified by administrators, the record of donation is saved on the Polygon Blockchain. It remains an immutable certificate of proof. Anonymous donations will have donor identities securely masked.
+                  </p>
+                </div>
+
+                <div>
+                  <h4 className="font-bold text-slate-800 mb-1">
+                    4. Refund and Verification Policy
+                  </h4>
+                  <p>
+                    All donations are final and non-refundable once sent to the CareConnect Foundation. Receipt falsification violates security rules and will result in temporary/permanently flagging of the corresponding profile.
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-slate-100 mt-4 shrink-0 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowTermsModal(false)}
+                  className="flex-1 py-3 text-slate-500 hover:text-slate-800 font-bold uppercase text-xs tracking-wider"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAgreedTerms(true);
+                    setShowTermsModal(false);
+                  }}
+                  className="flex-1 py-3 bg-brand-primary text-white font-bold uppercase text-xs tracking-wider rounded-xl hover:bg-brand-primary/95 transition-all text-center"
+                >
+                  I Agree
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }

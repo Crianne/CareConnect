@@ -242,8 +242,12 @@ export function generateDonationReportPdf(
     if (d.type === 'auction_payment') {
       destination = 'Boutique Auction Settlement';
     } else if (d.patientId) {
-      const matchPat = patients.find((p) => p.id === d.patientId);
-      destination = matchPat ? `Patient PX-${matchPat.publicIdentifier}` : `Patient (ID: ${d.patientId.substring(0,6)})`;
+      if (d.patientId === 'general-pool') {
+        destination = 'General Care Pool (Auto-Allocated)';
+      } else {
+        const matchPat = patients.find((p) => p.id === d.patientId);
+        destination = matchPat ? `Patient PX-${matchPat.publicIdentifier}` : `Patient (ID: ${d.patientId.substring(0,6)})`;
+      }
     }
 
     // 4. TX hash / ID short

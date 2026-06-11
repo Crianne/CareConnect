@@ -33,8 +33,12 @@ export interface UserProfile {
   verifiedContributionsCount: number;
   donationStreak: number;
   lastDonationDate?: string;
+  badges?: string[];
   emailVerified: boolean;
   createdAt: string;
+  isRecurringDonor?: boolean;
+  recurringFrequency?: 'monthly' | 'weekly';
+  recurringAmount?: number;
 }
 
 export interface Patient {
@@ -50,6 +54,8 @@ export interface Patient {
   status: PatientStatus;
   isPublic: boolean;
   medicalDocuments?: { id: string; name: string; url: string; uploadedAt: string }[];
+  regionId?: string;
+  hospital?: string;
   createdAt: string;
   lastUpdated: string;
 }
@@ -72,6 +78,9 @@ export interface Donation {
   verifiedBy?: string;
   type?: 'regular' | 'auction_payment';
   auctionId?: string;
+  isRecurring?: boolean;
+  frequency?: 'monthly' | 'weekly' | 'one-time';
+  isCarePoolDivided?: boolean;
 }
 
 export interface AuctionItem {
@@ -93,6 +102,7 @@ export interface AuctionItem {
   contractDeployed?: boolean;
   deployedAt?: string;
   lastUpdated?: string;
+  donorContact?: string;
 }
 
 export interface Bid {

@@ -27,10 +27,24 @@ export function Notifications() {
     const donationsRef = collection(db, 'donations');
     const baseQuery = profile.role === UserRole.ADMIN 
       ? query(donationsRef, orderBy('timestamp', 'desc'), limit(10))
-      : query(donationsRef, where('donorId', '==', profile.userId), orderBy('timestamp', 'desc'), limit(10));
+      : query(donationsRef, where('donorId', '==', profile.userId));
 
     const unsub = onSnapshot(baseQuery, (snapshot) => {
-      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      let docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      
+      if (profile.role !== UserRole.ADMIN) {
+        // Sort client-side to prevent missing index error
+        docs.sort((a: any, b: any) => {
+          const getT = (ts: any) => {
+            if (!ts) return 0;
+            if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+            if (ts.seconds) return ts.seconds * 1000;
+            return new Date(ts).getTime();
+          };
+          return getT(b.timestamp) - getT(a.timestamp);
+        });
+        docs = docs.slice(0, 10);
+      }
       
       const derived = docs.map((d: any) => {
           const isVerified = d.status === 'verified';
@@ -86,7 +100,7 @@ export function Notifications() {
     });
 
     return () => unsub();
-  }, [profile]);
+  }, [profile?.userId, profile?.role]);
 
   return (
     <div className="max-w-2xl mx-auto space-y-8">

@@ -38,6 +38,52 @@
 .markdown-body ul { @apply list-disc ml-5 mb-3 space-y-1; }
 .markdown-body h3 { @apply text-base font-bold mb-2 text-slate-800 uppercase tracking-widest; }
 
+.markdown-body-dark {
+  @apply text-slate-200 leading-relaxed text-sm;
+}
+
+.markdown-body-dark p { @apply mb-3 text-slate-300; }
+.markdown-body-dark ul { @apply list-disc ml-5 mb-3 space-y-1 text-slate-300; }
+.markdown-body-dark h1 { @apply text-2xl font-black mb-4 text-white uppercase tracking-widest; }
+.markdown-body-dark h2 { @apply text-lg font-bold mb-3 text-teal-400 uppercase tracking-wider border-b border-white/10 pb-1 mt-6; }
+.markdown-body-dark h3 { @apply text-sm font-bold mb-2 text-white uppercase tracking-widest mt-4; }
+.markdown-body-dark strong { @apply text-teal-300 font-bold; }
+.markdown-body-dark li { @apply text-slate-300; }
+
+/* Table styling for light theme markdown */
+.markdown-body table {
+  @apply w-full my-4 border-collapse text-left block overflow-x-auto;
+  white-space: nowrap;
+}
+.markdown-body th {
+  @apply bg-slate-100/80 text-slate-700 font-semibold uppercase tracking-wider text-[10px] px-3 py-2 border border-slate-200;
+}
+.markdown-body td {
+  @apply px-3 py-2 text-xs border border-slate-200 text-slate-600 font-medium;
+}
+.markdown-body tr:nth-child(even) {
+  @apply bg-slate-50/55;
+}
+
+/* Table styling for dark theme markdown (Admin/Telemetry) */
+.markdown-body-dark table {
+  @apply w-full my-4 border-collapse text-left block overflow-x-auto rounded-xl border border-teal-800/30;
+  white-space: nowrap;
+  background-color: rgba(4, 47, 46, 0.4); /* deep translucent teal block bg */
+}
+.markdown-body-dark th {
+  @apply bg-teal-950/80 text-teal-300 font-bold uppercase tracking-wider text-[9px] px-3 py-2 border-b-2 border-teal-800/40;
+}
+.markdown-body-dark td {
+  @apply px-3 py-2 text-[10px] border border-teal-900/40 text-slate-200 font-mono;
+}
+.markdown-body-dark tr:nth-child(even) {
+  @apply bg-white/[0.02];
+}
+.markdown-body-dark tr:hover {
+  @apply bg-teal-900/20;
+}
+
 .status-badge {
   @apply px-2.5 py-0.5 text-[9px] font-bold uppercase tracking-widest rounded border transition-colors;
 }

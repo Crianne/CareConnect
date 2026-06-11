@@ -23,10 +23,14 @@ import {
   TrendingUp,
   Sparkles,
   Clock,
-  ExternalLink
+  ExternalLink,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { DwellTooltip } from './DwellTooltip';
 import { UserRole, AppConfiguration, Donation, LoyaltyTier } from '../types';
+import { Achievements } from './Achievements';
 
 const MILESTONES = [
   {
@@ -66,6 +70,7 @@ export function Settings() {
   const [activeSubTab, setActiveSubTab] = useState('profile');
   const [displayName, setDisplayName] = useState(profile?.displayName || '');
   const [isSaving, setIsSaving] = useState(false);
+  const [showSettingsPassword, setShowSettingsPassword] = useState(false);
   const [config, setConfig] = useState<AppConfiguration | null>(null);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
@@ -89,12 +94,22 @@ export function Settings() {
     
     const donationsQuery = query(
       collection(db, 'donations'),
-      where('donorId', '==', profile.userId),
-      orderBy('timestamp', 'desc')
+      where('donorId', '==', profile.userId)
     );
 
     const unsub = onSnapshot(donationsQuery, (snapshot) => {
-      setUserDonations(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Donation)));
+      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Donation));
+      // Sort client-side of timestamp descending to avoid compound index error
+      docs.sort((a, b) => {
+        const getT = (ts: any) => {
+          if (!ts) return 0;
+          if (typeof ts.toDate === 'function') return ts.toDate().getTime();
+          if (ts.seconds) return ts.seconds * 1000;
+          return new Date(ts).getTime();
+        };
+        return getT(b.timestamp) - getT(a.timestamp);
+      });
+      setUserDonations(docs);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'donations'));
 
     return unsub;
@@ -266,9 +281,17 @@ export function Settings() {
                   <div>
                     <h3 className="text-xl font-bold text-slate-800">{profile?.displayName}</h3>
                     <p className="text-sm text-slate-400 font-medium">{profile?.email}</p>
-                    <span className="mt-2 inline-block px-2 py-0.5 bg-brand-primary/10 text-brand-primary text-[10px] font-bold uppercase tracking-wider rounded border border-brand-primary/20">
-                      {profile?.loyaltyTier?.split(' ')[0] || 'Standard'} Member
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                      <span className="inline-block px-2 py-0.5 bg-brand-primary/10 text-brand-primary text-[10px] font-bold uppercase tracking-wider rounded border border-brand-primary/20">
+                        {profile?.loyaltyTier?.split(' ')[0] || 'Standard'} Member
+                      </span>
+                      {profile?.isRecurringDonor && (
+                        <span className="inline-block px-2 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold uppercase tracking-wider rounded border border-emerald-200 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                          {profile.recurringFrequency} Sustainer (₱{profile.recurringAmount?.toLocaleString()})
+                        </span>
+                      )}
+                    </div>
                   </div>
                </div>
 
@@ -286,6 +309,12 @@ export function Settings() {
                     <input className="w-full bg-slate-50 px-4 py-3 rounded-xl border border-slate-100 text-sm font-medium opacity-60 cursor-not-allowed" defaultValue={profile?.email || ''} readOnly />
                   </div>
                </div>
+
+               {profile && profile.role !== UserRole.ADMIN && (
+                 <div className="pt-8 border-t border-slate-100 space-y-8">
+                   <Achievements />
+                 </div>
+               )}
             </div>
           )}
 
@@ -312,7 +341,21 @@ export function Settings() {
 
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Update Password</label>
-                    <input type="password" placeholder="••••••••••••" className="w-full bg-slate-50 px-4 py-3 rounded-xl border border-slate-100 text-sm font-medium" />
+                    <div className="relative">
+                      <input 
+                        type={showSettingsPassword ? "text" : "password"} 
+                        placeholder="••••••••••••" 
+                        className="w-full bg-slate-50 pl-4 pr-10 py-3 rounded-xl border border-slate-100 text-sm font-medium outline-none focus:ring-2 focus:ring-brand-primary/20 transition-all" 
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSettingsPassword(!showSettingsPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 transition-colors focus:outline-none"
+                        title={showSettingsPassword ? "Hide password" : "Show password"}
+                      >
+                        {showSettingsPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="p-4 border border-amber-100 bg-amber-50 rounded-xl">
@@ -468,14 +511,32 @@ export function Settings() {
                                 </div>
                              </div>
                              <div className="flex items-center gap-3">
-                                <span className={cn(
-                                  "px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider rounded border",
-                                  donation.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
-                                  donation.status === 'pending' ? "bg-amber-50 text-amber-600 border-amber-100" :
-                                  "bg-red-50 text-red-600 border-red-100"
-                                )}>
-                                  {donation.status}
-                                </span>
+                                <DwellTooltip
+                                  title={
+                                    donation.status === 'verified' ? "Contribution Approved" :
+                                    donation.status === 'pending' ? "Audit In Progress" :
+                                    "Verification Failed"
+                                  }
+                                  description={
+                                    donation.status === 'verified' ? "On-chain verification complete. This payment receipt is permanently registered on Polygon POS and allocated securely to care campaigns." :
+                                    donation.status === 'pending' ? "Undergoing manual administrator checking and OCR receipt validation. This prevents balance spoofing or duplicates." :
+                                    "The proof was flagged or rejected due to visual discrepancy or duplicate registration."
+                                  }
+                                  statusType={
+                                    donation.status === 'verified' ? "verified" :
+                                    donation.status === 'pending' ? "pending" :
+                                    "rejected"
+                                  }
+                                >
+                                   <span className={cn(
+                                     "px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider rounded border cursor-help",
+                                     donation.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                                     donation.status === 'pending' ? "bg-amber-50 text-amber-600 border-amber-100" :
+                                     "bg-red-50 text-red-600 border-red-100"
+                                   )}>
+                                     {donation.status}
+                                   </span>
+                                </DwellTooltip>
                                 {donation.blockchainTxHash && (
                                   <button onClick={() => alert(`Simulated On-Chain Transaction Viewer\n-----------------------------------\nTX HASH: ${donation.blockchainTxHash}\nNETWORK: Polygon Mainnet (Simulated)\nSTATUS: Confirmed\n\nDirect mainnet registry links are disabled in this audit sandbox environment.`)}>
                                     <ExternalLink className="w-3.5 h-3.5 text-slate-300 hover:text-brand-primary transition-colors" />
@@ -612,6 +673,24 @@ export function Settings() {
         </motion.div>
 
         <div className="flex flex-col md:flex-row gap-6">
+           <div 
+              onClick={() => {
+                 window.dispatchEvent(new CustomEvent('trigger-onboarding-tour'));
+              }}
+              className="flex-1 glass-card p-6 flex items-center justify-between cursor-pointer hover:border-brand-primary/35 transition-all duration-200 group"
+           >
+              <div className="flex items-center gap-4">
+                 <div className="p-3 bg-brand-primary/10 rounded-xl text-brand-primary group-hover:scale-105 transition-transform duration-200">
+                    <Sparkles className="w-5 h-5" />
+                 </div>
+                 <div>
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Interactive Platform Guide</h4>
+                    <p className="text-[10px] text-slate-400 font-medium">Replay the step-by-step introduction of key features.</p>
+                 </div>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-brand-primary transition-colors" />
+           </div>
+
            <div className="flex-1 glass-card p-6 flex items-center justify-between">
               <div className="flex items-center gap-4">
                  <div className="p-3 bg-teal-50 rounded-xl text-teal-600">

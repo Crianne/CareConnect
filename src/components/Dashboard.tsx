@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot, orderBy, limit, addDoc, serverTimestamp, doc, updateDoc, increment } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, limit, addDoc, serverTimestamp, doc, updateDoc, increment, getDocs } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../context/AuthContext';
-import { Patient, Donation, LoyaltyTier, UserRole } from '../types';
+import { Patient, Donation, LoyaltyTier, UserRole, AuctionItem } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
-import { Sparkles, Trophy, ArrowRight, ShieldCheck, Heart, TrendingUp, Activity, Clock } from 'lucide-react';
+import { Sparkles, Trophy, ArrowRight, ShieldCheck, Heart, TrendingUp, Activity, Clock, FileText, ShieldAlert, Gavel } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import copy from 'copy-to-clipboard';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Info, Copy, Check, X as CloseIcon } from 'lucide-react';
+import { PredictiveAnalyticsCoPilot } from './PredictiveAnalyticsCoPilot';
+import { generateDonorImpactPdf } from '../utils/donorImpactPdf';
+import { Achievements } from './Achievements';
+import { DwellTooltip } from './DwellTooltip';
+import { TitleExplainer } from './TitleExplainer';
 
 const TIER_DETAILS = [
   {
@@ -77,6 +82,8 @@ export function Dashboard() {
 
   const [showTxViewer, setShowTxViewer] = useState<Donation | null>(null);
   const [showTierMatrix, setShowTierMatrix] = useState(false);
+  const [adminDonations, setAdminDonations] = useState<Donation[]>([]);
+  const [adminAuctions, setAdminAuctions] = useState<AuctionItem[]>([]);
 
   const handleCopy = (text: string, id: string) => {
     copy(text);
@@ -86,25 +93,50 @@ export function Dashboard() {
 
   const getFullHash = (donation: Donation) => donation.blockchainTxHash || ('0x' + donation.id.padEnd(64, '0'));
 
+  const parseDate = (ts: any) => {
+    if (!ts) return new Date();
+    if (typeof ts.toDate === 'function') return ts.toDate();
+    if (ts.seconds) return new Date(ts.seconds * 1000);
+    return new Date(ts);
+  };
+
+  const getImpactTimeframe = () => {
+    if (!impactData || impactData.length === 0) return 'Impact Tracking Period';
+    const firstMonth = impactData[0].name;
+    const lastMonth = impactData[impactData.length - 1].name;
+    return `Monthly Tracking Range: ${firstMonth} – ${lastMonth} 2026`;
+  };
+
   useEffect(() => {
     if (!profile) return;
 
     // We only show verified donations in the public feed for everyone to maintain the "Verified Ledger" promise
-    const dQuery = query(collection(db, 'donations'), where('status', '==', 'verified'), orderBy('timestamp', 'desc'), limit(50));
+    const dQuery = query(collection(db, 'donations'), where('status', '==', 'verified'));
 
     const unsub = onSnapshot(dQuery, (snapshot) => {
       const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Donation));
-      setRecentDonations(docs);
+      // Sort client-side by timestamp DESC to avoid compound index error
+      docs.sort((a, b) => {
+        const tA = parseDate(a.timestamp).getTime();
+        const tB = parseDate(b.timestamp).getTime();
+        return tB - tA;
+      });
+      setRecentDonations(docs.slice(0, 50));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'donations'));
 
     // Personal donations listener
     const pQuery = query(
       collection(db, 'donations'), 
-      where('donorId', '==', profile.userId),
-      orderBy('timestamp', 'desc')
+      where('donorId', '==', profile.userId)
     );
     const unsubPersonal = onSnapshot(pQuery, (snapshot) => {
       const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Donation));
+      // Sort client-side by timestamp DESC to avoid compound index error
+      docs.sort((a, b) => {
+        const tA = parseDate(a.timestamp).getTime();
+        const tB = parseDate(b.timestamp).getTime();
+        return tB - tA;
+      });
       setPersonalDonations(docs);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'donations'));
 
@@ -135,23 +167,39 @@ export function Dashboard() {
 
       relevantDocs.forEach(d => {
         try {
-          const date = new Date(d.timestamp);
+          const date = parseDate(d.timestamp);
           if (isNaN(date.getTime())) return;
           const month = date.toLocaleString('default', { month: 'short' });
           monthMap[month] = (monthMap[month] || 0) + d.amount;
         } catch (e) {}
       });
 
-      setImpactData(Object.entries(monthMap).map(([name, amount]) => ({ name, amount })));
+      const monthOrder = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const sortedImpact = Object.entries(monthMap)
+        .map(([name, amount]) => ({ name, amount }))
+        .sort((a, b) => monthOrder.indexOf(a.name) - monthOrder.indexOf(b.name));
+      setImpactData(sortedImpact);
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'donations'));
 
     // Admin Audit Logs Listener
     let unsubAudit = () => {};
+    let unsubAdminDonations = () => {};
+    let unsubAdminAuctions = () => {};
     if (profile && profile.role === UserRole.ADMIN) {
       const aQuery = query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(15));
       unsubAudit = onSnapshot(aQuery, (snapshot) => {
         setRecentAuditLogs(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
       }, (err) => handleFirestoreError(err, OperationType.LIST, 'audit_logs'));
+
+      // Listen to all donations to extract pending and pool allocations
+      unsubAdminDonations = onSnapshot(collection(db, 'donations'), (snapshot) => {
+        setAdminDonations(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Donation)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'donations'));
+
+      // Listen to all auctions to extract audits
+      unsubAdminAuctions = onSnapshot(collection(db, 'auctions'), (snapshot) => {
+        setAdminAuctions(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as AuctionItem)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, 'auctions'));
     }
 
     return () => {
@@ -159,8 +207,10 @@ export function Dashboard() {
       unsubPersonal();
       unsubStats();
       unsubAudit();
+      unsubAdminDonations();
+      unsubAdminAuctions();
     };
-  }, [profile]);
+  }, [profile?.userId, profile?.role]);
 
   // Reconcile user profile statistics with the actual donations list
   useEffect(() => {
@@ -200,10 +250,18 @@ export function Dashboard() {
       
       updateStats();
     }
-  }, [personalDonations, profile?.userId]);
+  }, [personalDonations, profile?.userId, profile?.totalContribution, profile?.verifiedContributionsCount, profile?.loyaltyTier]);
 
-  const handleGenerateReport = () => {
-    alert("Impact Report for May 2026 generated. Deployed as PDF to Foundation Blockchain Vault.");
+  const handleGenerateReport = async () => {
+    if (!profile) return;
+    try {
+      const patientsSnap = await getDocs(collection(db, 'patients'));
+      const patientsList = patientsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Patient));
+      generateDonorImpactPdf(profile, personalDonations, patientsList);
+    } catch (e) {
+      console.error('Failed to generate on-chain report:', e);
+      alert('Failed to generate report. Telemetry is authenticating, please try again in a moment.');
+    }
   };
 
   const handleSystemHealth = () => {
@@ -277,6 +335,12 @@ export function Dashboard() {
                   >
                     Review My Ledger
                   </button>
+                  <button 
+                    onClick={handleGenerateReport}
+                    className="px-6 py-2.5 bg-teal-500 hover:bg-teal-400 border border-teal-400/20 text-white rounded-lg font-bold transition-all flex items-center gap-2 text-sm cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4 text-white" /> Download Impact Report
+                  </button>
                 </>
               )}
             </div>
@@ -320,66 +384,280 @@ export function Dashboard() {
           </motion.div>
         ))}
       </div>
+          {/* Dynamic Mid-section for Admin vs General User */}
+      {profile?.role === UserRole.ADMIN ? (
+        <div className="space-y-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+            <div className="lg:col-span-2 xl:col-span-3 flex flex-col">
+              {(() => {
+                const pendingCount = adminDonations.filter(d => d.status === 'pending').length;
+                const auditAuctionCount = adminAuctions.filter(a => a.status === 'audit').length;
+                const unreconciledPoolCount = adminDonations.filter(d => d.status === 'verified' && d.patientId === 'general-pool' && !d.isCarePoolDivided).length;
+                const totalPendingAuditActions = pendingCount + auditAuctionCount + unreconciledPoolCount;
 
-      <div className={cn("grid grid-cols-1 gap-8", profile?.role === UserRole.ADMIN ? "lg:grid-cols-2" : "lg:grid-cols-3")}>
-        {/* Warrior Progression (Loyalty) for general users or Foundation Audit Trail for admin */}
-        {profile?.role === UserRole.ADMIN ? (
-          <div className="lg:col-span-1 p-0 bg-slate-900 rounded-xl border border-slate-800 shadow-2xl relative overflow-hidden flex flex-col h-[500px] transition-all duration-300 hover:shadow-lg">
-             <div className="relative z-10 flex flex-col h-full">
-                <div className="p-6 border-b border-white/10 flex items-center justify-between bg-slate-950/50">
-                   <div className="flex flex-col">
+                return (
+                  <div className="bg-slate-900 text-white rounded-[2rem] p-6 md:p-8 shadow-xl border border-slate-800 relative overflow-hidden transition-all duration-300 flex-1 flex flex-col justify-between">
+                    {/* Ambient subtle decorative glow */}
+                    <div className="absolute top-0 right-0 w-80 h-80 bg-brand-primary/10 rounded-full blur-3xl -mr-28 -mt-28 pointer-events-none" />
+                    <div className="absolute bottom-0 left-0 w-64 h-64 bg-teal-500/5 rounded-full blur-3xl -ml-20 -mb-20 pointer-events-none" />
+                    
+                    <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6 border-b border-white/10 pb-6 mb-6 relative z-10">
+                      <div className="space-y-2 text-left">
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-brand-primary/20 border border-brand-primary/30 rounded-full text-[9px] font-black uppercase tracking-wider text-teal-300">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          Live Operational Integrity Engine
+                        </div>
+                        <h2 className="text-xl md:text-2xl font-black tracking-tight text-white flex items-center gap-2">
+                          Operational Audit & Reconciliation Control Room
+                        </h2>
+                        <p className="text-xs text-slate-300 font-medium leading-relaxed max-w-2xl">
+                          Inspect real-time treasury checkpoints requiring supervisor oversight. Review donation slips, authorize artisan auction contracts, or rebalance delayed universal pool records to ensure no pediatric case experiences medical funding slippage.
+                        </p>
+                      </div>
+                      
+                      <div className="shrink-0 font-sans">
+                        <div className={cn(
+                          "px-5 py-4 rounded-2xl flex flex-col items-center justify-center min-w-[140px] border transition-all duration-350 shadow-inner",
+                          totalPendingAuditActions > 0 
+                            ? "bg-amber-500/10 border-amber-500/20 text-amber-400" 
+                            : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                        )}>
+                          <span className="text-3xl font-black tracking-tight animate-fade-in">{totalPendingAuditActions}</span>
+                          <span className="text-[9px] font-black uppercase tracking-widest mt-1">Pending Audits</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5 relative z-10 text-left">
+                      {/* Card 1: Donation Receipts */}
+                      <div className={cn(
+                        "p-5 rounded-2xl border transition-all duration-300 text-left flex flex-col justify-between h-full group bg-slate-950/40 hover:bg-slate-950/60",
+                        pendingCount > 0 ? "border-amber-500/20 shadow-[0_0_12px_rgba(245,158,11,0.02)]" : "border-slate-800"
+                      )}>
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[8px] font-black uppercase tracking-wider font-mono">
+                              Ledger Proofs
+                            </span>
+                            <span className="flex items-center gap-1.5">
+                              <span className={cn("w-1.5 h-1.5 rounded-full", pendingCount > 0 ? "bg-amber-400 animate-pulse" : "bg-emerald-400")} />
+                              <span className="text-[10px] font-bold text-slate-400">
+                                {pendingCount > 0 ? `${pendingCount} Pending` : 'All Verified'}
+                              </span>
+                            </span>
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
+                            <ShieldAlert className="w-3.5 h-3.5 text-amber-500/80" />
+                            Donation Verification
+                          </h4>
+                          <p className="text-[11px] text-slate-400 font-medium leading-relaxed">
+                            GCash screenshot scans and physical banking slips submitted by donors waiting for manual artifact comparison and receipt-state commitment.
+                          </p>
+                        </div>
+                        
+                        <button
+                          onClick={() => {
+                            localStorage.setItem('admin_sub_tab', 'verification');
+                            window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin', subTab: 'verification' } as any));
+                          }}
+                          className="mt-5 w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold uppercase text-[9px] tracking-widest transition-all :text-slate-900 border border-slate-700/50 cursor-pointer"
+                        >
+                          Verify Deposits Now →
+                        </button>
+                      </div>
+
+                      {/* Card 2: Auctions Smart Contracts */}
+                      <div className={cn(
+                        "p-5 rounded-2xl border transition-all duration-300 text-left flex flex-col justify-between h-full group bg-slate-950/40 hover:bg-slate-950/60",
+                        auditAuctionCount > 0 ? "border-purple-500/20 shadow-[0_0_12px_rgba(168,85,247,0.02)]" : "border-slate-800"
+                      )}>
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[8px] font-black uppercase tracking-wider font-mono">
+                              Provenance Audit
+                            </span>
+                            <span className="flex items-center gap-1.5">
+                              <span className={cn("w-1.5 h-1.5 rounded-full", auditAuctionCount > 0 ? "bg-purple-400 animate-pulse" : "bg-emerald-400")} />
+                              <span className="text-[10px] font-bold text-slate-400">
+                                {auditAuctionCount > 0 ? `${auditAuctionCount} Under Audit` : 'All Deployed'}
+                              </span>
+                            </span>
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
+                            <Gavel className="w-3.5 h-3.5 text-purple-400" />
+                            Asset Smart Contracts
+                          </h4>
+                          <p className="text-[11px] text-slate-400 font-medium leading-relaxed">
+                            Exquisite art masterpieces or boutique memorabilia assets requiring core contract initialization and deployment to Polygon POS block record.
+                          </p>
+                        </div>
+                        
+                        <button
+                          onClick={() => {
+                            localStorage.setItem('admin_sub_tab', 'auctions');
+                            window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin', subTab: 'auctions' } as any));
+                          }}
+                          className="mt-5 w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold uppercase text-[9px] tracking-widest transition-all border border-slate-700/50 cursor-pointer"
+                        >
+                          Inspect & Deploy contracts →
+                        </button>
+                      </div>
+
+                      {/* Card 3: Care Pool Overbalances */}
+                      <div className={cn(
+                        "p-5 rounded-2xl border transition-all duration-300 text-left flex flex-col justify-between h-full group bg-slate-950/40 hover:bg-slate-950/60",
+                        unreconciledPoolCount > 0 ? "border-teal-500/20 shadow-[0_0_12px_rgba(20,184,166,0.02)]" : "border-slate-800"
+                      )}>
+                        <div className="space-y-3 text-left">
+                          <div className="flex items-center justify-between">
+                            <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[8px] font-black uppercase tracking-wider font-mono">
+                              Ledger Equilibrium
+                            </span>
+                            <span className="flex items-center gap-1.5">
+                              <span className={cn("w-1.5 h-1.5 rounded-full", unreconciledPoolCount > 0 ? "bg-teal-400 animate-pulse" : "bg-emerald-400")} />
+                              <span className="text-[10px] font-bold text-slate-400">
+                                {unreconciledPoolCount > 0 ? `${unreconciledPoolCount} Unreconciled` : 'Fully Synchronized'}
+                              </span>
+                            </span>
+                          </div>
+                          <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wide flex items-center gap-1.5">
+                            <Activity className="w-3.5 h-3.5 text-teal-400" />
+                            Care Pool Divisions
+                          </h4>
+                          <p className="text-[11px] text-slate-400 font-medium leading-relaxed">
+                            General/Unified Care Pool donations that require split distribution. Divide these across active pediatric registries to rebalance treatment wallets.
+                          </p>
+                        </div>
+                        
+                        <button
+                          onClick={() => {
+                            localStorage.setItem('admin_sub_tab', 'verification');
+                            window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin', subTab: 'verification' } as any));
+                          }}
+                          className="mt-5 w-full py-2.5 px-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold uppercase text-[9px] tracking-widest transition-all flex items-center justify-center gap-1.5 border border-transparent shadow-lg hover:shadow-teal-600/15 cursor-pointer"
+                        >
+                          Go to Care Pool Rebalancer →
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="lg:col-span-1 xl:col-span-1">
+              <div className="p-0 bg-slate-900 rounded-xl border border-slate-800 shadow-2xl relative overflow-hidden flex flex-col h-full min-h-[500px] transition-all duration-300 hover:shadow-lg">
+                <div className="relative z-10 flex flex-col h-full">
+                  <div className="p-6 border-b border-white/10 flex items-center justify-between bg-slate-950/50">
+                    <div className="flex flex-col text-left">
                       <div className="flex items-center gap-2 mb-1">
-                         <ShieldCheck className="w-5 h-5 text-teal-400" />
-                         <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Foundation Audit Trail</span>
+                        <ShieldCheck className="w-5 h-5 text-teal-400" />
+                        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white">Foundation Audit Trail</span>
                       </div>
                       <span className="text-[8px] text-white/40 uppercase tracking-widest font-bold">Administrative Real-Time History</span>
-                   </div>
-                   <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.8)]" />
-                </div>
+                    </div>
+                    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.8)]" />
+                  </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar">
-                   {recentAuditLogs.length === 0 ? (
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar max-h-[350px]">
+                    {recentAuditLogs.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-center px-8 opacity-20">
-                         <Activity className="w-12 h-12 text-white mb-4 animate-pulse" />
-                         <p className="text-[10px] font-bold text-white uppercase tracking-widest">Awaiting system events...</p>
+                        <Activity className="w-12 h-12 text-white mb-4 animate-pulse" />
+                        <p className="text-[10px] font-bold text-white uppercase tracking-widest">Awaiting system events...</p>
                       </div>
-                   ) : recentAuditLogs.map((log) => (
-                      <div key={log.id} className="p-4 bg-white/5 rounded-2xl border border-white/10 hover:bg-white/10 transition-all cursor-pointer group">
-                         <div className="flex items-center justify-between mb-2">
-                            <span className="px-2 py-0.5 bg-teal-500/20 text-teal-400 text-[8px] font-black uppercase tracking-tighter rounded border border-teal-500/30">
-                               {log.action}
-                            </span>
-                            <span className="text-[9px] text-white/40 font-mono">
-                               {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                         </div>
-                         <p className="text-[11px] text-white/80 font-bold leading-snug mb-2 line-clamp-2">{log.details}</p>
-                         <div className="flex items-center gap-2">
-                            <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[8px] font-bold text-teal-400 border border-white/5 uppercase">
-                               {log.adminEmail?.charAt(0) || 'A'}
-                            </div>
-                            <span className="text-[9px] text-white/30 font-medium truncate italic">{log.adminEmail}</span>
-                         </div>
+                    ) : recentAuditLogs.map((log) => (
+                      <div key={log.id} className="p-4 bg-white/5 rounded-2xl border border-white/10 hover:bg-white/10 transition-all cursor-pointer group text-left">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="px-2 py-0.5 bg-teal-500/20 text-teal-400 text-[8px] font-black uppercase tracking-tighter rounded border border-teal-500/30">
+                            {log.action}
+                          </span>
+                          <span className="text-[9px] text-white/40 font-mono">
+                            {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-white/80 font-bold leading-snug mb-2 line-clamp-2">{log.details}</p>
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 rounded-full bg-white/10 flex items-center justify-center text-[8px] font-bold text-teal-400 border border-white/5 uppercase">
+                            {log.adminEmail?.charAt(0) || 'A'}
+                          </div>
+                          <span className="text-[9px] text-white/30 font-medium truncate italic">{log.adminEmail}</span>
+                        </div>
                       </div>
-                   ))}
+                    ))}
+                  </div>
+                  
+                  <div className="p-6 mt-auto bg-gradient-to-t from-slate-950 to-transparent">
+                    <button 
+                      onClick={() => {
+                        localStorage.setItem('admin_sub_tab', 'control');
+                        window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin', subTab: 'control' } as any));
+                      }}
+                      className="w-full py-3 bg-white/10 hover:bg-white border border-white/10 hover:text-slate-900 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all cursor-pointer"
+                    >
+                      Open Audit Hub
+                    </button>
+                  </div>
                 </div>
-                
-                <div className="p-6 mt-auto bg-gradient-to-t from-slate-950 to-transparent">
-                   <button 
-                     onClick={() => {
-                       localStorage.setItem('admin_sub_tab', 'control');
-                       window.dispatchEvent(new CustomEvent('nav-change', { detail: 'admin', subTab: 'control' } as any));
-                     }}
-                     className="w-full py-3 bg-white/10 hover:bg-white border border-white/10 hover:text-slate-900 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
-                   >
-                     Open Audit Hub
-                   </button>
-                </div>
-             </div>
-             <div className="absolute top-0 right-0 w-64 h-64 bg-teal-500/5 rounded-full blur-3xl -mr-32 -mt-32" />
+                <div className="absolute top-0 right-0 w-64 h-64 bg-teal-500/5 rounded-full blur-3xl -mr-32 -mt-32" />
+              </div>
+            </div>
           </div>
-        ) : (
-          <div className="lg:col-span-1 glass-card p-8 flex flex-col items-center text-center relative overflow-hidden">
+
+          <div className="glass-card flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex flex-col text-left">
+              <div className="flex">
+                <TitleExplainer
+                  featureName="Impact Trend"
+                  simpleExplanation="The Impact Trend is a simple visual chart. It shows how much money has been donated over time, proving that every single Peso is active."
+                  badge="Kindness Tracker"
+                  bulletPoints={[
+                    "Tracks the amount and timeframe of donations",
+                    "Updates in real-time as admin approves payments",
+                    "Excludes unverified or cancelled transfer proofs"
+                  ]}
+                >
+                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-brand-primary shrink-0" />
+                    Impact Trend
+                  </h3>
+                </TitleExplainer>
+              </div>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider font-mono mt-1">
+                {getImpactTimeframe()}
+              </p>
+            </div>
+            <div className="p-6 h-[300px]">
+               <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={impactData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <XAxis 
+                      dataKey="name" 
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#64748b', fontSize: 10, fontWeight: 500, fontFamily: 'monospace' }}
+                      dy={8}
+                    />
+                    <YAxis 
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#64748b', fontSize: 9, fontFamily: 'monospace' }}
+                      tickFormatter={(value) => `₱${value >= 1000 ? (value / 1000).toFixed(0) + 'k' : value}`}
+                      dx={-6}
+                    />
+                    <Tooltip 
+                      formatter={(value: any) => [`₱${Number(value).toLocaleString()}`, 'Impact Amount']}
+                      contentStyle={{ background: '#0f172a', border: 'none', borderRadius: '12px' }}
+                      itemStyle={{ color: '#2dd4bf', fontSize: '12px', fontWeight: 'bold' }}
+                    />
+                    <Area type="monotone" dataKey="amount" stroke="#0d9488" fill="#0d9488" fillOpacity={0.06} strokeWidth={2} />
+                  </AreaChart>
+               </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-8">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="glass-card p-8 flex flex-col items-center text-center relative overflow-hidden">
              <div className="absolute top-0 right-0 w-32 h-32 bg-brand-primary/5 rounded-full -mr-16 -mt-16" />
              
              <div className="relative mb-6">
@@ -401,7 +679,13 @@ export function Dashboard() {
              </div>
 
              <h3 className="text-xl font-bold text-slate-800 mb-1">{profile?.loyaltyTier || LoyaltyTier.BRONZE}</h3>
-             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em] mb-6">Warrior Path Status</p>
+             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.2em] mb-4">Warrior Path Status</p>
+             {profile?.isRecurringDonor && (
+               <div className="mb-6 px-4 py-2 bg-emerald-500/10 text-emerald-700 rounded-full border border-emerald-500/20 text-xs font-bold inline-flex items-center gap-1.5 shadow-sm">
+                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                 <span className="capitalize">{profile.recurringFrequency}</span> Partner
+               </div>
+             )}
 
              <div className="w-full space-y-4 text-left">
                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between">
@@ -443,9 +727,9 @@ export function Dashboard() {
                    <p className="text-xl font-bold text-slate-800">100%</p>
                    <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">On-Chain</p>
                 </div>
-             </div>
+              </div>
 
-             <div className="w-full mt-6 pt-6 border-t border-slate-100">
+              <div className="w-full mt-6 pt-6 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowTierMatrix(true)}
@@ -455,17 +739,25 @@ export function Dashboard() {
                 </button>
              </div>
           </div>
-        )}
 
-        {/* My Activity / Submissions Feed - Hidden for admins */}
-        {profile?.role !== UserRole.ADMIN && (
-          <div className="lg:col-span-1 glass-card flex flex-col overflow-hidden">
-            <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-              <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-                <Clock className="w-4 h-4 text-brand-primary" />
-                My Audit Status
-              </h3>
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Recent Submissions</span>
+          <div className="glass-card flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between text-left">
+              <TitleExplainer
+                featureName="My Audit Status"
+                simpleExplanation="My Audit Status lists your own donation submissions. It shows whether they are pending admin review, approved/verified, or rejected due to low receipt quality."
+                badge="Personal Log"
+                bulletPoints={[
+                  "Lists your recent PHP donation bank or GCash submissions",
+                  "Allows you to monitor active state transitions",
+                  "Displays real-time blockchain TX hashes once verified"
+                ]}
+              >
+                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-brand-primary shrink-0" />
+                  My Audit Status
+                </h3>
+              </TitleExplainer>
+              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest font-mono">Recent Submissions</span>
             </div>
             <div className="p-2 space-y-1 overflow-y-auto max-h-[400px] no-scrollbar">
               {personalDonations.length === 0 ? (
@@ -473,26 +765,44 @@ export function Dashboard() {
                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">No Submissions Found</p>
                 </div>
               ) : personalDonations.map((d) => (
-                <div key={d.id} className="p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-slate-100 group">
+                <div key={d.id} className="p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-slate-100 group text-left">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-slate-800">₱{d.amount.toLocaleString()}</span>
-                      <span className={cn(
-                        "text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border",
-                        d.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
-                        d.status === 'rejected' ? "bg-red-50 text-red-600 border-red-100" :
-                        "bg-amber-50 text-amber-600 border-amber-100"
-                      )}>
-                        {d.status}
-                      </span>
+                       <span className="text-xs font-bold text-slate-800">₱{d.amount.toLocaleString()}</span>
+                      <DwellTooltip
+                        title={
+                          d.status === 'verified' ? "Contribution Approved" :
+                          d.status === 'rejected' ? "Verification Failed" :
+                          "Audit In Progress"
+                        }
+                        description={
+                          d.status === 'verified' ? "On-chain verification complete. This payment receipt is permanently registered on Polygon and allocated securely to care campaigns." :
+                          d.status === 'rejected' ? "The payment receipt was flagged or rejected due to visual discrepancy, low image quality, or duplicate entry." :
+                          "Undergoing manual administrator audit checking and OCR receipt validation. This prevents balance spoofing or duplicates."
+                        }
+                        statusType={
+                          d.status === 'verified' ? "verified" :
+                          d.status === 'rejected' ? "rejected" :
+                          "pending"
+                        }
+                      >
+                         <span className={cn(
+                           "text-[8px] font-bold uppercase px-1.5 py-0.5 rounded border cursor-help",
+                           d.status === 'verified' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                           d.status === 'rejected' ? "bg-red-50 text-red-600 border-red-100" :
+                           "bg-amber-50 text-amber-600 border-amber-100"
+                         )}>
+                           {d.status}
+                         </span>
+                      </DwellTooltip>
                     </div>
                     <span className="text-[9px] font-bold text-slate-400">
-                      {new Date(d.timestamp).toLocaleDateString()}
+                      {parseDate(d.timestamp).toLocaleDateString()}
                     </span>
                   </div>
                   
                   {d.status === 'rejected' && d.rejectionReason && (
-                    <div className="mt-2 p-2 bg-red-50/50 rounded-lg border border-red-100/50">
+                    <div className="mt-2 p-2 bg-red-50/50 rounded-lg border border-red-100/50 text-left">
                       <p className="text-[9px] font-bold text-red-700 uppercase tracking-widest mb-1 italic">Audit Failure Reason:</p>
                       <p className="text-[10px] text-red-600 leading-tight">{d.rejectionReason}</p>
                     </div>
@@ -508,38 +818,88 @@ export function Dashboard() {
               ))}
             </div>
           </div>
-        )}
-
-        {/* Impact Chart moved to separate row? No, keep logic simple. Replacing original grid. */}
-        {/* Re-adding Impact Chart correctly in the 3-column layout */}
-        <div className="lg:col-span-1 glass-card flex flex-col overflow-hidden">
-          <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-brand-primary" />
-              Impact Velocity
-            </h3>
           </div>
-          <div className="p-6 flex-1 min-h-[250px]">
-             <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={impactData}>
-                  <XAxis dataKey="name" hide />
-                  <Tooltip labelStyle={{ display: 'none' }} />
-                  <Area type="monotone" dataKey="amount" stroke="#0d9488" fill="#0d9488" fillOpacity={0.1} strokeWidth={2} />
-                </AreaChart>
-             </ResponsiveContainer>
+
+          <div className="glass-card flex flex-col overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex flex-col text-left">
+              <div className="flex">
+                <TitleExplainer
+                  featureName="Impact Trend"
+                  simpleExplanation="The Impact Trend is a simple visual chart. It shows how much money has been donated over time, proving that every single Peso is active."
+                  badge="Kindness Tracker"
+                  bulletPoints={[
+                    "Tracks the amount and timeframe of donations",
+                    "Updates in real-time as admin approves payments",
+                    "Excludes unverified or cancelled transfer proofs"
+                  ]}
+                >
+                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-brand-primary shrink-0" />
+                    Impact Trend
+                  </h3>
+                </TitleExplainer>
+              </div>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider font-mono mt-1">
+                {getImpactTimeframe()}
+              </p>
+            </div>
+            <div className="p-6 h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={impactData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <XAxis 
+                      dataKey="name" 
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#64748b', fontSize: 10, fontWeight: 500, fontFamily: 'monospace' }}
+                      dy={8}
+                    />
+                    <YAxis 
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fill: '#64748b', fontSize: 9, fontFamily: 'monospace' }}
+                      tickFormatter={(value) => `₱${value >= 1000 ? (value / 1000).toFixed(0) + 'k' : value}`}
+                      dx={-6}
+                    />
+                    <Tooltip 
+                      formatter={(value: any) => [`₱${Number(value).toLocaleString()}`, 'Impact Amount']}
+                      contentStyle={{ background: '#0f172a', border: 'none', borderRadius: '12px' }}
+                      itemStyle={{ color: '#2dd4bf', fontSize: '12px', fontWeight: 'bold' }}
+                    />
+                    <Area type="monotone" dataKey="amount" stroke="#0d9488" fill="#0d9488" fillOpacity={0.06} strokeWidth={2} />
+                  </AreaChart>
+               </ResponsiveContainer>
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {profile?.role !== UserRole.ADMIN && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8 lg:h-[530px]">
+          <Achievements className="h-full" />
+          <PredictiveAnalyticsCoPilot profile={profile} className="h-full" />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-8">
         {/* Live Ledger */}
         <div className="glass-card flex flex-col overflow-hidden">
           <div className="p-6 border-b border-slate-100 flex items-center justify-between">
             <div>
-              <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-brand-primary" />
-                Real-time Chain Feed (Verified Only)
-              </h3>
+              <TitleExplainer
+                featureName="Real-time Chain Feed"
+                simpleExplanation="The Real-time Chain Feed displays a live synchronized ticker of all approved donations across the community, integrated directly with Polygon Proof of Stake receipt signatures."
+                badge="Mainnet Feed"
+                bulletPoints={[
+                  "Only lists successfully audited and approved PHP donations",
+                  "Shows immediate cryptographic transaction hashes",
+                  "Allows full certificate inspection for absolute proof"
+                ]}
+              >
+                <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-brand-primary shrink-0" />
+                  Real-time Chain Feed (Verified Only)
+                </h3>
+              </TitleExplainer>
               <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mt-1">Audit Trail Synchronized with Polygon POS</p>
             </div>
             <div className="flex items-center gap-2">
@@ -810,10 +1170,21 @@ export function Dashboard() {
       </AnimatePresence>
 
           <div className="p-8 bg-slate-50 rounded-3xl border border-slate-200">
-            <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-4">
-              <Info className="w-4 h-4 text-brand-primary" />
-              On-Chain Sync Architecture
-            </h3>
+            <TitleExplainer
+              featureName="On-Chain Sync Architecture"
+              simpleExplanation="The On-Chain Sync Architecture is a mechanism linking fast cloud storage with decentralised blockchain networks. This prevents server tamper issues while keeping load times immediate."
+              badge="Infrastructure"
+              bulletPoints={[
+                "Provides Firestore speed for visual rendering and response times",
+                "Mirrors verified states to decentralized Polygon nodes",
+                "Maintains persistent cryptographic confirmation files"
+              ]}
+            >
+              <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center gap-2 mb-4">
+                <Info className="w-4 h-4 text-brand-primary shrink-0" />
+                On-Chain Sync Architecture
+              </h3>
+            </TitleExplainer>
             <p className="text-xs text-slate-500 leading-relaxed font-bold tracking-tight uppercase">
               Your contributions are processed via <span className="text-brand-primary">Firestore Enterprise</span> for high-speed application state, 
               which is then mirrored in real-time to the <span className="text-brand-primary">Foundation Blockchain Vault</span>. 

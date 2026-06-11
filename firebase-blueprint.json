@@ -12,8 +12,12 @@
         "role": { "type": "string", "enum": ["admin", "donor"] },
         "loyaltyTier": { "type": "string", "enum": ["Bronze", "Silver", "Gold", "Platinum"] },
         "totalContribution": { "type": "number" },
+        "badges": { "type": "array" },
         "emailVerified": { "type": "boolean" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isRecurringDonor": { "type": "boolean" },
+        "recurringFrequency": { "type": "string", "enum": ["monthly", "weekly"] },
+        "recurringAmount": { "type": "number" }
       },
       "required": ["userId", "email", "role", "emailVerified"]
     },
@@ -32,6 +36,8 @@
         "fundingGoal": { "type": "number" },
         "fundingRaised": { "type": "number" },
         "status": { "type": "string", "enum": ["Active", "TreatmentCompleted", "Inactive"] },
+        "regionId": { "type": "string" },
+        "hospital": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "lastUpdated": { "type": "string", "format": "date-time" }
       },
@@ -53,7 +59,9 @@
         "status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "timestamp": { "type": "string", "format": "date-time" },
         "verifiedAt": { "type": "string", "format": "date-time" },
-        "verifiedBy": { "type": "string" }
+        "verifiedBy": { "type": "string" },
+        "isRecurring": { "type": "boolean" },
+        "frequency": { "type": "string", "enum": ["monthly", "weekly", "one-time"] }
       },
       "required": ["amount", "donorId", "timestamp", "status"]
     },
@@ -73,7 +81,8 @@
         "endTime": { "type": "string", "format": "date-time" },
         "status": { "type": "string", "enum": ["draft", "active", "closed"] },
         "contractAddress": { "type": "string" },
-        "contractDeployed": { "type": "boolean" }
+        "contractDeployed": { "type": "boolean" },
+        "donorContact": { "type": "string" }
       },
       "required": ["title", "startPrice", "endTime"]
     },
@@ -102,6 +111,20 @@
         "allowPublicSubmissions": { "type": "boolean" },
         "privacyNotice": { "type": "string" }
       }
+    },
+    "Report": {
+      "title": "Compiled Report",
+      "description": "Compiled ledger reconciliation report.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "type": { "type": "string" },
+        "hash": { "type": "string" },
+        "size": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "date", "type", "hash", "size"]
     }
   },
   "firestore": {
@@ -111,6 +134,7 @@
     "/auctions/{auctionId}": { "schema": "AuctionItem", "description": "Charity auction items" },
     "/auctions/{auctionId}/bids/{bidId}": { "schema": "object", "description": "Subcollection for bids" },
     "/audit_logs/{logId}": { "schema": "AuditLog", "description": "Administrative actions" },
-    "/settings/config": { "schema": "AppConfiguration", "description": "Global settings" }
+    "/settings/config": { "schema": "AppConfiguration", "description": "Global settings" },
+    "/reports/{reportId}": { "schema": "Report", "description": "Compiled ledger reports" }
   }
 }
